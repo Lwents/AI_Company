@@ -1,0 +1,26 @@
+[package]
+name = "ai-company"
+version = "0.1.0"
+edition = "2021"
+description = "AI Company backend: orchestrates AI employees and serves the office UI"
+
+[[bin]]
+name = "ai-company"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+dotenvy = "0.15"
+fastrand = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
