@@ -30,6 +30,8 @@ pub struct Ctx {
     pub cancel: CancellationToken,
     pub outcome: Option<Outcome>,
     pub created_tickets: u32,
+    /// Path of the last file written and how many times in a row (to stop endless polishing).
+    pub last_write: Option<(String, u32)>,
 }
 
 fn tool(name: &'static str, description: &'static str, schema: Value) -> ToolDef {
@@ -46,7 +48,8 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
         tool("list_files", "Liệt kê tệp trong thư mục dự án (đệ quy).", obj(json!({ "dir": { "type": "string", "description": "Thư mục con, bỏ trống = gốc dự án" } }), &[])),
         tool("read_file", "Đọc nội dung một tệp trong dự án.", obj(json!({ "path": { "type": "string" } }), &["path"])),
     ];
-    if role != Role::Reviewer {
+    // Reviewers only read code, but at meetings everyone writes down their opinion and vote.
+    if role != Role::Reviewer || phase.starts_with("meeting_") {
         t.push(tool(
             "write_file",
             "Ghi (tạo mới hoặc ghi đè toàn bộ) một tệp trong dự án. Đường dẫn tương đối so với gốc dự án.",
@@ -283,6 +286,14 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             let content = s(input, "content");
             tokio::fs::write(&p, content).await.map_err(|e| format!("Không ghi được {rel}: {e}"))?;
             store.kpi(&me.id, |k| k.files_written += 1);
+            let n = match &ctx.last_write {
+                Some((last, n)) if last == rel => n + 1,
+                _ => 1,
+            };
+            ctx.last_write = Some((rel.to_string(), n));
+            if n >= 3 && rel.starts_with("docs/meetings/") {
+                return Ok(format!("Đã ghi {rel} ({} byte). Bạn đã ghi tệp này {n} lần liên tiếp: nội dung đã đủ tốt, ĐỪNG sửa thêm nữa — gọi finish ngay.", content.len()));
+            }
             Ok(format!("Đã ghi {rel} ({} byte)", content.len()))
         }
         "run_command" => run_command(ctx, s(input, "command")).await,

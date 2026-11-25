@@ -343,6 +343,15 @@ fn script(store: &S, req: &LlmRequest<'_>) -> Option<(String, Vec<ToolCall>)> {
             (s(""), vec![call("write_file", json!({ "path": "docs/REPORT.md", "content": format!("# Báo cáo: {title}\n\nĐã hoàn thành trang quản lý việc cần làm.\n\n- Thêm / tick / xóa việc\n- Lưu bằng localStorage\n\nMở index.html để dùng thử.\n") }))]),
             (s(""), vec![call("finish", json!({ "summary": format!("Kính gửi Chủ tịch: dự án \"{title}\" đã xong. Sản phẩm là trang web thêm/tick/xóa việc, dữ liệu lưu trên trình duyệt. Tester đã phát hiện và Dev đã sửa 1 lỗi (thiếu nút Xóa). Mời anh/chị mở tab Sản phẩm để xem thử.") }))]),
         ],
+        "meeting_opinion" => vec![(s(""), vec![call("finish", json!({ "summary": "Đồng ý hướng đi chung; đề xuất làm bản đơn giản chạy được trước rồi mới mở rộng." }))])],
+        "meeting_ballot" => vec![
+            (s(""), vec![call("write_file", json!({ "path": "docs/meetings/kickoff/BALLOT.md", "content": "Không có vấn đề cần bỏ phiếu\n" }))]),
+            (s(""), vec![call("finish", json!({ "summary": "Mọi người đã đồng thuận." }))]),
+        ],
+        "plan_decide" => vec![
+            (s(""), vec![call("write_file", json!({ "path": "docs/DECISIONS.md", "content": "# Quyết định họp khởi động\n\n- Chấp nhận: làm bản đơn giản chạy được trước, mở rộng sau.\n" }))]),
+            (s(""), vec![call("finish", json!({ "summary": "Giữ kế hoạch, ưu tiên bản đơn giản chạy được trước." }))]),
+        ],
         _ => vec![(s(""), vec![call("finish", json!({ "summary": "Xong." }))])],
     };
     steps.into_iter().nth(step)

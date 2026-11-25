@@ -419,6 +419,7 @@ async fn delete_employee(State(store): State<S>, Path(id): Path<String>) -> ApiR
 
 async fn update_settings(State(store): State<S>, Json(mut s): Json<Settings>) -> ApiResult {
     s.max_concurrent = s.max_concurrent.clamp(1, 16);
+    s.meeting_rounds = s.meeting_rounds.min(5);
     s.max_agent_steps = s.max_agent_steps.clamp(3, 200);
     s.max_bounces = s.max_bounces.min(10);
     s.mock_delay_ms = s.mock_delay_ms.min(10_000);

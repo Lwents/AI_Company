@@ -194,6 +194,7 @@ export interface Settings {
   maxAgentSteps: number;
   defaultBudgetUsd: number;
   mockDelayMs: number;
+  meetingRounds: number;
 }
 
 export interface CompanyState {

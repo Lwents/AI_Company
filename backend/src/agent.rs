@@ -209,6 +209,7 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
         cancel: cancel.clone(),
         outcome: None,
         created_tickets: 0,
+        last_write: None,
     };
     let pid = Some(project.id.as_str());
     let tid = job.ticket_id.as_deref();
@@ -229,7 +230,7 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
         };
         let res = llm::chat(
             store,
-            LlmRequest { employee: &emp_now, system: &system, messages: &messages, tools: &tools, max_tokens: 16000, meta: &meta },
+            LlmRequest { employee: &emp_now, system: &system, messages: &messages, tools: &tools, max_tokens: 32000, meta: &meta },
             cancel,
         )
         .await;
@@ -269,6 +270,23 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
                 "Hãy tiếp tục bằng tool. Nếu đã xong, gọi tool kết thúc với tóm tắt."
             };
             messages.push(LlmMessage::User { text: Some(note.into()), tool_results: vec![] });
+            continue;
+        }
+
+        if res.stop == Stop::MaxTokens {
+            // The reply hit the output limit, so tool arguments (e.g. a file's content) are cut off.
+            // Don't write half a file: make the model redo it shorter.
+            store.log_activity(&emp.id, pid, "error", "Câu trả lời bị cắt vì quá dài, yêu cầu viết lại ngắn hơn");
+            let results = res
+                .tool_calls
+                .iter()
+                .map(|c| ToolResult {
+                    id: c.id.clone(),
+                    content: "KHÔNG thực hiện: câu trả lời của bạn bị cắt vì vượt giới hạn độ dài, nội dung không đầy đủ. Hãy làm lại ngắn gọn hơn, hoặc chia thành nhiều tệp / nhiều lần ghi nhỏ.".into(),
+                    is_error: true,
+                })
+                .collect();
+            messages.push(LlmMessage::User { text: None, tool_results: results });
             continue;
         }
 

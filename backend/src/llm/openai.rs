@@ -50,6 +50,7 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
 
     let body = json!({
         "model": e.model,
+        "stream": false,
         "max_tokens": req.max_tokens,
         "messages": to_messages(req.system, req.messages),
         "tools": req.tools.iter().map(|t| json!({

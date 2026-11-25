@@ -48,6 +48,11 @@ export function SettingsPanel() {
           <input type="number" min={0} step={0.5} value={draft.defaultBudgetUsd} onChange={(e) => set("defaultBudgetUsd", Number(e.target.value))} />
         </label>
         <label>
+          Số vòng thảo luận ở họp khởi động
+          <input type="number" min={0} max={5} value={draft.meetingRounds} onChange={(e) => set("meetingRounds", Number(e.target.value))} />
+        </label>
+        <p className="small muted">Các trưởng bộ phận góp ý rồi phản biện bản nháp của CEO trước khi CEO chốt. 0 = CEO tự quyết. Mỗi vòng tốn thêm khoảng 12 lượt gọi model.</p>
+        <label>
           Độ trễ giả lập của Mock (ms)
           <input type="number" min={0} max={10000} step={100} value={draft.mockDelayMs} onChange={(e) => set("mockDelayMs", Number(e.target.value))} />
         </label>

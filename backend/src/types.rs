@@ -382,6 +382,8 @@ pub struct Settings {
     pub max_agent_steps: u32,
     pub default_budget_usd: f64,
     pub mock_delay_ms: u64,
+    /// Discussion rounds at the kickoff meeting before the CEO decides (0 = the CEO decides alone).
+    pub meeting_rounds: u32,
 }
 
 impl Default for Settings {
@@ -393,6 +395,7 @@ impl Default for Settings {
             max_agent_steps: 30,
             default_budget_usd: 2.0,
             mock_delay_ms: 1200,
+            meeting_rounds: 2,
         }
     }
 }
