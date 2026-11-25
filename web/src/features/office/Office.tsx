@@ -4,7 +4,7 @@ import { topPerformer } from "@/features/kpi/scoring";
 import { buildLayout } from "./layout";
 import { createScene, p } from "./engine/scene";
 import { applyLiveEvent, tick } from "./engine/simulation";
-import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, resetCamera, startDrag, zoomAt } from "./engine/camera";
+import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, resetCamera, startDrag, wheelFactor, zoomBy, zoomStep } from "./engine/camera";
 import { drawWorld } from "./render/world";
 import { compose } from "./render/overlay";
 import "./office.css";
@@ -57,6 +57,8 @@ export function Office() {
           off.height = p(layout.H);
         }
         fitView(scene, canvas, wrapRef.current!, layout);
+        const z = scene.view.k.toFixed(2);
+        if (canvas.dataset.zoom !== z) canvas.dataset.zoom = z; // for tests / debugging
         tick(scene, st, layout, dt, now);
         drawWorld(octx, scene, st, layout, now);
         compose(ctx, off, scene, st, layout, now);
@@ -64,8 +66,17 @@ export function Office() {
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
+
+    // Native, non-passive listener: React's onWheel is passive and can't stop the page
+    // from scrolling or the browser from zooming the whole page (touchpad pinch / Ctrl+wheel).
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault();
+      zoomBy(scene, canvas, devicePoint(canvas, ev), wheelFactor(ev));
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       cancelAnimationFrame(raf);
+      canvas.removeEventListener("wheel", onWheel);
     };
   }, [scene]);
 
@@ -75,7 +86,6 @@ export function Office() {
     <div className="office" ref={wrapRef}>
       <canvas
         ref={canvasRef}
-        onWheel={(ev) => zoomAt(scene, canvas(), devicePoint(canvas(), ev), ev.deltaY < 0)}
         onMouseDown={(ev) => startDrag(scene, canvas(), devicePoint(canvas(), ev))}
         onMouseMove={(ev) => {
           const d = devicePoint(canvas(), ev);
@@ -96,6 +106,17 @@ export function Office() {
           scene.drag = null;
         }}
       />
+      <div className="zoom-ctl">
+        <button title="Phóng to" onClick={() => zoomStep(scene, canvas(), true)}>
+          +
+        </button>
+        <button title="Thu nhỏ" onClick={() => zoomStep(scene, canvas(), false)}>
+          −
+        </button>
+        <button title="Vừa khung" onClick={() => resetCamera(scene)}>
+          ⤢
+        </button>
+      </div>
     </div>
   );
 }

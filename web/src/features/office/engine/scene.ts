@@ -45,6 +45,8 @@ export interface View {
   ox: number;
   oy: number;
   k: number;
+  /** Zoom that fits the whole office in the canvas (the zoom-out limit). */
+  fitK: number;
 }
 
 /** Camera: auto-fit, or manual zoom centred on (cx, cy) in office pixels. */
@@ -81,7 +83,7 @@ export function createScene(): Scene {
     selectedEmployee: null,
     selectedProject: null,
     mouse: null,
-    view: { scale: 1, ox: 0, oy: 0, k: 1 },
+    view: { scale: 1, ox: 0, oy: 0, k: 1, fitK: 1 },
     cam: { manual: false, zoom: 2, cx: 0, cy: 0 },
     drag: null,
   };

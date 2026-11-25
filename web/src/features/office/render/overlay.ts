@@ -74,7 +74,7 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     ctx,
     8,
     ctx.canvas.height - fs - 8,
-    scene.cam.manual ? "Lăn chuột: zoom · Kéo: di chuyển · Nhấp đúp: vừa màn hình" : "Lăn chuột để phóng to · kéo để di chuyển",
+    scene.cam.manual ? "Lăn chuột / nút +− : zoom · Kéo: di chuyển · Nhấp đúp: vừa khung" : "Lăn chuột hoặc bấm + để phóng to",
     fs * 0.85,
     "rgba(20,18,31,0.7)",
     C.silver,

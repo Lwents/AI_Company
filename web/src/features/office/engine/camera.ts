@@ -1,8 +1,8 @@
 import type { Layout, P } from "../layout";
 import { U, p, type Actor, type Scene } from "./scene";
 
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 6;
+/** Most office-pixel → device-pixel magnification. Zooming out stops at "fit". */
+const MAX_ZOOM = 8;
 
 /** Sizes the canvas to its container and computes the world → screen transform. */
 export function fitView(scene: Scene, canvas: HTMLCanvasElement, wrap: HTMLElement, l: Layout) {
@@ -18,10 +18,13 @@ export function fitView(scene: Scene, canvas: HTMLCanvasElement, wrap: HTMLEleme
   const PW = p(l.W);
   const PH = p(l.H);
   const c = scene.cam;
+  const fit = Math.min(cw / PW, ch / PH);
+  // Integer zoom keeps pixels perfectly square; below 2× use the exact fit.
+  const fitK = fit >= 2 ? Math.floor(fit) : fit;
+  if (c.manual && c.zoom <= fitK * 1.001) c.manual = false;
   if (!c.manual) {
-    const fit = Math.min(cw / PW, ch / PH);
-    const k = fit >= 2 ? Math.floor(fit) : fit;
-    scene.view = { k, scale: k / U, ox: Math.floor((cw - PW * k) / 2), oy: Math.floor((ch - PH * k) / 2) };
+    const k = fitK;
+    scene.view = { k, fitK, scale: k / U, ox: Math.floor((cw - PW * k) / 2), oy: Math.floor((ch - PH * k) / 2) };
     return;
   }
   const k = c.zoom;
@@ -29,7 +32,7 @@ export function fitView(scene: Scene, canvas: HTMLCanvasElement, wrap: HTMLEleme
   const halfH = ch / k / 2;
   c.cx = PW * k <= cw ? PW / 2 : Math.min(PW - halfW, Math.max(halfW, c.cx));
   c.cy = PH * k <= ch ? PH / 2 : Math.min(PH - halfH, Math.max(halfH, c.cy));
-  scene.view = { k, scale: k / U, ox: Math.round(cw / 2 - c.cx * k), oy: Math.round(ch / 2 - c.cy * k) };
+  scene.view = { k, fitK, scale: k / U, ox: Math.round(cw / 2 - c.cx * k), oy: Math.round(ch / 2 - c.cy * k) };
 }
 
 export function toScreen(scene: Scene, wx: number, wy: number) {
@@ -63,18 +66,38 @@ export function hitTest(scene: Scene, pt: P): Actor | null {
   return best;
 }
 
-/** One zoom step in or out; the office pixel under the cursor stays put. */
-export function zoomAt(scene: Scene, canvas: HTMLCanvasElement, d: P, zoomIn: boolean) {
+/**
+ * Multiplies the zoom by `factor`, keeping the office pixel under device point `d` in place.
+ * Zooming out to (or past) the fit level returns to auto-fit.
+ */
+export function zoomBy(scene: Scene, canvas: HTMLCanvasElement, d: P, factor: number) {
   const c = scene.cam;
   const v = scene.view;
   const ux = (d.x - v.ox) / v.k;
   const uy = (d.y - v.oy) / v.k;
-  const cur = c.manual ? c.zoom : Math.max(1, Math.round(v.k));
-  const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, cur + (zoomIn ? 1 : -1)));
+  // No snapping to whole numbers: it would trap small touchpad steps. Non-integer zoom
+  // still looks crisp thanks to sharp-bilinear scaling in render/overlay.ts.
+  const next = Math.min(MAX_ZOOM, Math.max(v.fitK, v.k * factor));
+  if (next <= v.fitK * 1.001) {
+    c.manual = false;
+    return;
+  }
   c.manual = true;
   c.zoom = next;
   c.cx = ux - (d.x - canvas.width / 2) / next;
   c.cy = uy - (d.y - canvas.height / 2) / next;
+}
+
+/** Mouse wheel / touchpad (pinch arrives as a wheel event with ctrlKey) → smooth zoom factor. */
+export function wheelFactor(ev: WheelEvent): number {
+  const lines = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? 400 : 1;
+  const dy = Math.max(-200, Math.min(200, ev.deltaY * lines));
+  return Math.exp(-dy * (ev.ctrlKey ? 0.01 : 0.002));
+}
+
+/** Zoom buttons: one step around the canvas centre. */
+export function zoomStep(scene: Scene, canvas: HTMLCanvasElement, zoomIn: boolean) {
+  zoomBy(scene, canvas, { x: canvas.width / 2, y: canvas.height / 2 }, zoomIn ? 1.25 : 0.8);
 }
 
 export function startDrag(scene: Scene, canvas: HTMLCanvasElement, d: P) {
@@ -96,7 +119,7 @@ export function dragTo(scene: Scene, d: P) {
   const c = scene.cam;
   if (!c.manual) {
     c.manual = true;
-    c.zoom = Math.max(1, Math.round(scene.view.k));
+    c.zoom = scene.view.k;
   }
   c.cx = g.cx - (d.x - g.x) / c.zoom;
   c.cy = g.cy - (d.y - g.y) / c.zoom;

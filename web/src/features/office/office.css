@@ -14,3 +14,21 @@
   place-items: center;
   color: var(--muted);
 }
+
+/* Zoom buttons, top-right of the office */
+.zoom-ctl {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 2;
+}
+.zoom-ctl button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 22px;
+  line-height: 1;
+}
