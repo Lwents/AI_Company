@@ -1,0 +1,37 @@
+.case {
+  border-top: 1px dashed #46507a;
+  padding: 7px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.case.on {
+  background: #262d4a;
+  padding: 7px 8px;
+}
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
+}
+.bubble {
+  max-width: 88%;
+  padding: 5px 9px;
+  border: 2px solid var(--line);
+}
+.bubble.them {
+  align-self: flex-start;
+  background: #3a3350;
+}
+.bubble.us {
+  align-self: flex-end;
+  background: #24406b;
+}
+.bubble.sys {
+  align-self: center;
+  background: #1a1d30;
+  color: var(--muted);
+  font-size: 16px;
+}

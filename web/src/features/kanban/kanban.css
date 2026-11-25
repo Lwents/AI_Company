@@ -1,0 +1,40 @@
+.chip {
+  font-size: 16px;
+  padding: 0 6px;
+  color: var(--line);
+  border: 2px solid var(--line);
+}
+.kcol h4 {
+  margin: 4px 0 6px;
+  padding: 1px 8px;
+  border-left: 6px solid;
+  font-size: 20px;
+  font-weight: 400;
+  background: #1e2238;
+}
+.ticket {
+  background: #f4e6c4;
+  color: var(--line);
+  border: 2px solid var(--line);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.35);
+  padding: 6px 9px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.ticket .key {
+  color: #566c86;
+}
+.ticket .muted {
+  color: #566c86;
+}
+.ttitle {
+  font-size: 20px;
+  margin-top: 1px;
+}
+.tdetail p {
+  margin: 6px 0;
+}
+.tdetail ul {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}

@@ -103,17 +103,47 @@ Tab **KPI** chấm điểm 0–100 cho từng người, xếp hạng S/A/B/C:
 
 ```
 backend/src/
-  main.rs       khởi động server, phục vụ web/dist
-  api.rs        REST + WebSocket
-  workflow.rs   quy trình công ty (các phase, Dev ⇄ Tester)
-  agent.rs      vòng lặp tool-use của một nhân viên
-  tools.rs      tool + phân quyền + sandbox lệnh (có unit test)
-  llm/          anthropic.rs (Messages API), openai.rs (OpenAI-compatible), mock.rs
-  store.rs      trạng thái, lưu data/state.json, phát sự kiện
+  main.rs         khởi động server, phục vụ web/dist, cổng khách hàng công khai (PORTAL_BIND)
+  config.rs       vai trò, nhân sự mặc định, nhà cung cấp model, giá
+  types.rs        kiểu dữ liệu dùng chung (khớp với web/src/api/types.ts)
+  api.rs          REST + WebSocket
+  workflow.rs     quy trình làm sản phẩm (các phase, Dev ⇄ Tester, ra mắt)
+  ops.rs          vận hành sau ra mắt: CSKH, sửa lỗi khách báo, chiến dịch
+  portal.rs       trang cổng khách hàng
+  agent.rs        vòng lặp tool-use của một nhân viên
+  tools.rs        tool + phân quyền + sandbox lệnh (có unit test)
+  llm/            anthropic.rs (Messages API), openai.rs (OpenAI-compatible), mock.rs
+  store.rs        trạng thái, lưu data/state.json, phát sự kiện
+
 web/src/
-  office/       văn phòng 2D (layout + mô phỏng di chuyển + vẽ)
-  panels/       Dự án, Kanban, Chat, Nhân sự, Sản phẩm, Duyệt, Chi phí, Cài đặt
+  main.tsx        điểm vào
+  app/            khung trang: App, Header, tabs.ts (danh sách tab), dòng hoạt động
+  api/            types.ts (kiểu dữ liệu server), http.ts (gọi REST), socket.ts (WebSocket)
+  store/          trạng thái toàn cục: StoreProvider + reducer (áp sự kiện từ server)
+  shared/         labels.ts (tên vai trò, trạng thái…), format.ts (tiền, giờ), ui/ (Dialog, ErrorBoundary)
+  styles/         CSS chung: tokens.css (màu, font), base.css, components.css
+  features/       mỗi tab một thư mục, chứa component + CSS riêng
+    projects/ ops/ kanban/ chat/ staff/ kpi/ product/ approvals/ costs/ settings/
+    office/       văn phòng pixel
+      layout.ts           sơ đồ phòng, bàn, đường đi
+      engine/             scene.ts (trạng thái), simulation.ts (di chuyển), camera.ts (zoom/kéo)
+      render/             world.ts (người, bàn ghế), rooms.ts (sàn + đồ từng phòng), overlay.ts (chữ, bong bóng)
+      sprites/            draw.ts (bảng màu, hàm vẽ), character.ts (nhân vật), furniture.ts (đồ đạc)
 ```
+
+Import trong frontend dùng alias `@/` (= `web/src/`), ví dụ `import { useStore } from "@/store"`.
+
+### Cách nâng cấp
+
+| Muốn | Sửa ở đâu |
+|---|---|
+| Thêm tab mới | Tạo `features/<tên>/<Tên>Panel.tsx` (+ CSS nếu cần), thêm 1 dòng trong `app/tabs.ts` |
+| Đổi màu, font toàn bộ giao diện | `styles/tokens.css` |
+| Thêm vai trò nhân viên | Backend `types.rs` + `config.rs`; frontend `api/types.ts`, `shared/labels.ts` (tên, mô tả, phòng ban), `features/office/layout.ts` (ngồi phòng nào), `features/kpi/scoring.ts` (cách chấm điểm) |
+| Thêm phòng trong văn phòng | `features/office/layout.ts` (vị trí phòng), rồi thêm sàn và đồ đạc trong `FLOORS` / `DECOR` của `render/rooms.ts` |
+| Thêm đồ đạc pixel | Viết hàm vẽ trong `sprites/furniture.ts`, gọi nó trong `DECOR` của phòng |
+| Thêm sự kiện từ server | Backend `ServerEvent` trong `types.rs`; frontend `api/types.ts` + `store/reducer.ts` |
+| Hộp thoại xác nhận | `confirmDialog({...})` từ `@/shared/ui/Dialog` (không dùng `confirm()` của trình duyệt) |
 
 - Dữ liệu được lưu ở `data/state.json`.
 - Sản phẩm của các dự án nằm ở `workspace/<tên-dự-án>/`.

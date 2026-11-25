@@ -1,0 +1,8 @@
+/* Error boundary fallback */
+.card.crash {
+  margin: 12px;
+  border-color: var(--red, #b13e53);
+}
+.card.crash p {
+  word-break: break-word;
+}

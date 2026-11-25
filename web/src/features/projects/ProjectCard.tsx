@@ -1,0 +1,148 @@
+import { useState } from "react";
+import { api } from "@/api/http";
+import { useStore } from "@/store";
+import { confirmDialog } from "@/shared/ui/Dialog";
+import { PHASES, PROJECT_STATUS } from "@/shared/labels";
+import { usd } from "@/shared/format";
+import type { Project } from "@/api/types";
+
+export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: boolean; onSelect: () => void }) {
+  const { state } = useStore();
+  const [feedback, setFeedback] = useState("");
+  const [err, setErr] = useState("");
+  const st = PROJECT_STATUS[p.status];
+  const phaseIdx = PHASES.findIndex((x) => x.id === p.phase);
+  const tickets = state!.tickets.filter((t) => t.projectId === p.id);
+  const done = tickets.filter((t) => t.status === "done").length;
+  const pct = p.budgetUsd > 0 ? Math.min(100, (p.spentUsd / p.budgetUsd) * 100) : 0;
+
+  const act = async (action: string, body?: unknown) => {
+    setErr("");
+    try {
+      await api("POST", `/api/projects/${p.id}/${action}`, body);
+      if (action === "changes") setFeedback("");
+    } catch (e) {
+      setErr(String((e as Error).message));
+    }
+  };
+  const remove = async () => {
+    const ok = await confirmDialog({
+      title: `Xóa dự án "${p.name}"?`,
+      message: "Dự án sẽ biến mất khỏi danh sách. Các tệp trong thư mục workspace vẫn được giữ lại.",
+      okLabel: "Xóa dự án",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("DELETE", `/api/projects/${p.id}`);
+    } catch (e) {
+      setErr(String((e as Error).message));
+    }
+  };
+
+  return (
+    <section className={`card project ${selected ? "selected" : ""}`} onClick={onSelect}>
+      <div className="row between">
+        <h3 className="clip">{p.name}</h3>
+        <span className={`pill ${st.tone}`}>{st.label}</span>
+      </div>
+      <p className="muted small clip2">{p.request}</p>
+      <div className="phases">
+        {PHASES.map((ph, i) => (
+          <span key={ph.id} className={i < phaseIdx ? "done" : i === phaseIdx ? "now" : ""} title={ph.label}>
+            {ph.label}
+          </span>
+        ))}
+      </div>
+      <div className="row between small">
+        <span>
+          Ticket: {done}/{tickets.length}
+        </span>
+        <span>
+          Chi phí {usd(p.spentUsd)} / {usd(p.budgetUsd)}
+        </span>
+      </div>
+      <div className="bar">
+        <div style={{ width: `${pct}%` }} className={pct > 90 ? "hot" : ""} />
+      </div>
+      {p.error && <p className="error small">{p.error}</p>}
+
+      {selected && (
+        <div className="stack" onClick={(e) => e.stopPropagation()}>
+          {p.phase === "awaiting_approval" && (
+            <div className="report">
+              <b>Báo cáo của CEO</b>
+              <p>{p.report || "(trống)"}</p>
+              <div className="row">
+                <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+                  Mở sản phẩm
+                </a>
+                <button className="primary" onClick={() => act("approve")}>
+                  Duyệt & ra mắt
+                </button>
+              </div>
+              <textarea rows={2} placeholder="Hoặc yêu cầu sửa: cần thay đổi gì?" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+              <button disabled={!feedback.trim()} onClick={() => act("changes", { feedback })}>
+                Gửi yêu cầu sửa
+              </button>
+            </div>
+          )}
+          {(p.status === "operating" || (p.phase === "operating" && p.status === "paused")) && (
+            <div className="report">
+              <b>Đang vận hành</b>
+              <p className="small">Khách hàng liên hệ qua cổng hỗ trợ; CSKH, Sales và đội kỹ thuật xử lý tự động. Xem tab Vận hành.</p>
+              <div className="row wrap">
+                <a className="btn" href={`/portal/${p.id}/`} target="_blank" rel="noreferrer">
+                  Cổng khách hàng
+                </a>
+                <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+                  Sản phẩm
+                </a>
+              </div>
+              <textarea rows={2} placeholder="Muốn nâng cấp sản phẩm? Ghi yêu cầu (đội sẽ làm phiên bản mới rồi ra mắt lại)" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+              <button disabled={!feedback.trim()} onClick={() => act("changes", { feedback })}>
+                Giao nâng cấp
+              </button>
+            </div>
+          )}
+          {p.status === "done" && (
+            <div className="row">
+              <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+                Mở sản phẩm
+              </a>
+              <input placeholder="Muốn thêm tính năng? Ghi vào đây" value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+              <button disabled={!feedback.trim()} onClick={() => act("changes", { feedback })}>
+                Giao thêm
+              </button>
+            </div>
+          )}
+          <div className="row">
+            {p.status === "running" && <button onClick={() => act("pause")}>Tạm dừng</button>}
+            {p.status === "running" && <button onClick={() => act("stop")}>Dừng</button>}
+            {(p.status === "paused" || p.status === "stopped" || p.status === "failed") && p.phase !== "operating" && (
+              <button className="primary" onClick={() => act("resume")}>
+                Tiếp tục
+              </button>
+            )}
+            {p.status !== "running" && (
+              <button className="ghost danger" onClick={remove}>
+                Xóa
+              </button>
+            )}
+          </div>
+          {p.feedback.length > 0 && (
+            <details>
+              <summary className="small">Các lần yêu cầu sửa ({p.feedback.length})</summary>
+              <ol className="small">
+                {p.feedback.map((f, i) => (
+                  <li key={i}>{f}</li>
+                ))}
+              </ol>
+            </details>
+          )}
+          {err && <p className="error small">{err}</p>}
+        </div>
+      )}
+    </section>
+  );
+}

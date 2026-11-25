@@ -9,7 +9,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
-    "types": []
+    "types": [],
+    "paths": { "@/*": ["./web/src/*"] }
   },
   "include": ["web/src", "vite.config.ts"]
 }

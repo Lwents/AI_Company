@@ -1,0 +1,16 @@
+.office {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--bg);
+}
+.office canvas {
+  position: absolute;
+  inset: 0;
+  image-rendering: pixelated;
+}
+.office.loading {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}

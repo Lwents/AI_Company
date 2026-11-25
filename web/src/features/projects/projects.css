@@ -1,0 +1,40 @@
+.phases {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 2px;
+}
+.phases span {
+  flex: 1;
+  font-size: 14px;
+  text-align: center;
+  padding: 1px 0;
+  background: #1a1d30;
+  border: 1px solid var(--line);
+  color: #66708a;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.phases .done {
+  background: var(--green);
+  color: var(--line);
+}
+.phases .now {
+  background: var(--amber);
+  color: var(--line);
+}
+.report {
+  background: #2b2140;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.report b {
+  color: var(--amber);
+}
+.report p {
+  margin: 0;
+  white-space: pre-wrap;
+}

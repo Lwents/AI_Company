@@ -1,0 +1,105 @@
+/* Reset, form controls, buttons, scrollbars. */
+
+* {
+  box-sizing: border-box;
+  border-radius: 0 !important;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 19px/1.15 var(--pixel-font);
+  -webkit-font-smoothing: none;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+input,
+select,
+textarea {
+  width: 100%;
+  background: #141626;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel-in);
+  padding: 5px 8px;
+  outline: none;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent-hi);
+}
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--green);
+}
+textarea {
+  resize: vertical;
+}
+button,
+.btn {
+  background: #566c86;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel), 0 3px 0 var(--line);
+  padding: 3px 12px 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  position: relative;
+  top: 0;
+  margin-bottom: 3px;
+}
+button:hover:not(:disabled),
+.btn:hover {
+  filter: brightness(1.12);
+}
+button:active:not(:disabled),
+.btn:active {
+  top: 3px;
+  box-shadow: var(--bevel-in);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+}
+button.ghost {
+  background: var(--card-hi);
+}
+button.danger {
+  background: var(--red);
+}
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: #1a1d30;
+}
+::-webkit-scrollbar-thumb {
+  background: #566c86;
+  border: 2px solid var(--line);
+}
+::placeholder {
+  color: #66708a;
+}
+code,
+.mono {
+  font-family: var(--pixel-font);
+}

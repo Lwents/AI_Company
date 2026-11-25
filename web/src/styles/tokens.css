@@ -1,0 +1,23 @@
+/* Design tokens — Sweetie 16 palette, VT323 pixel font, bevels. Change colours here. */
+
+:root {
+  --bg: #1a1c2c;
+  --panel: #232741;
+  --card: #2c3352;
+  --card-hi: #3a4468;
+  --line: #14121f;
+  --text: #f4f4f4;
+  --muted: #94b0c2;
+  --accent: #3b5dc9;
+  --accent-hi: #41a6f6;
+  --green: #38b764;
+  --lime: #a7f070;
+  --red: #b13e53;
+  --orange: #ef7d57;
+  --amber: #ffcd75;
+  --violet: #5d275d;
+  --bevel: inset -2px -2px 0 rgba(0, 0, 0, 0.35), inset 2px 2px 0 rgba(255, 255, 255, 0.12);
+  --bevel-in: inset 2px 2px 0 rgba(0, 0, 0, 0.35), inset -2px -2px 0 rgba(255, 255, 255, 0.08);
+  --pixel-font: "VT323", ui-monospace, "Cascadia Mono", monospace;
+  color-scheme: dark;
+}

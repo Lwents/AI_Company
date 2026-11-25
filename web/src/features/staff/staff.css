@@ -1,0 +1,49 @@
+.drawer {
+  position: absolute;
+  left: 12px;
+  bottom: 44px;
+  width: min(480px, calc(100% - 24px));
+  max-height: 55%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--card);
+  border: 3px solid var(--line);
+  box-shadow: var(--bevel), 6px 6px 0 rgba(0, 0, 0, 0.45);
+  padding: 10px 12px;
+}
+.drawer p {
+  margin: 0;
+}
+.acts {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 17px;
+}
+.act {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 6px;
+}
+.act.llm {
+  background: #232741;
+  border-left: 4px solid var(--violet);
+}
+.act.tool {
+  color: var(--accent-hi);
+}
+.act.result {
+  color: var(--muted);
+  max-height: 58px;
+  overflow: hidden;
+}
+.act.error {
+  color: #ff8e9e;
+}
+.staff-group {
+  margin: 4px 0 -4px;
+  color: var(--amber);
+  font-size: 20px;
+}

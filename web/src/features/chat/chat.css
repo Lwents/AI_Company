@@ -1,0 +1,56 @@
+.small-pill {
+  margin-left: 6px;
+  font-size: 14px;
+}
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.msgs {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.msg {
+  background: var(--card);
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel);
+  padding: 5px 9px;
+}
+.msg.handoff {
+  border-left: 6px solid var(--accent-hi);
+}
+.msg.report {
+  border-left: 6px solid var(--amber);
+}
+.msg.question {
+  border-left: 6px solid var(--orange);
+}
+.msg.system {
+  border-left: 6px solid var(--red);
+}
+.msg .meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 16px;
+}
+.msg .text {
+  white-space: pre-wrap;
+  margin-top: 2px;
+}
+.composer {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 3px solid var(--line);
+  align-items: flex-start;
+}
+.composer select {
+  width: 130px;
+  flex-shrink: 0;
+}
