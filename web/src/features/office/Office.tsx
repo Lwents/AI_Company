@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/store";
 import { topPerformer } from "@/features/kpi/scoring";
 import { buildLayout } from "./layout";
@@ -81,29 +81,58 @@ export function Office() {
   }, [scene]);
 
   const canvas = () => canvasRef.current!;
+  // Active pointers (fingers) for pinch-zoom; kept across renders without causing any.
+  const [touches] = useState(() => new Map<number, { x: number; y: number }>());
+  const [pinch] = useState(() => ({ dist: 0 }));
 
   return (
     <div className="office" ref={wrapRef}>
       <canvas
         ref={canvasRef}
-        onMouseDown={(ev) => startDrag(scene, canvas(), devicePoint(canvas(), ev))}
-        onMouseMove={(ev) => {
-          const d = devicePoint(canvas(), ev);
-          scene.mouse = deviceToWorld(scene, d);
-          if (ev.buttons & 1) dragTo(scene, d);
-          canvas().style.cursor = scene.drag?.moved ? "grabbing" : hitTest(scene, scene.mouse) ? "pointer" : "grab";
+        // Pointer events: mouse, pen and touch alike. One finger drags, two fingers pinch-zoom.
+        onPointerDown={(ev) => {
+          canvas().setPointerCapture(ev.pointerId);
+          touches.set(ev.pointerId, devicePoint(canvas(), ev));
+          if (touches.size === 1) {
+            startDrag(scene, canvas(), devicePoint(canvas(), ev));
+          } else if (touches.size === 2) {
+            scene.drag = null; // a pinch is never a click
+            pinch.dist = spread(touches);
+          }
         }}
-        onMouseUp={(ev) => {
+        onPointerMove={(ev) => {
+          const d = devicePoint(canvas(), ev);
+          if (touches.has(ev.pointerId)) touches.set(ev.pointerId, d);
+          if (touches.size >= 2) {
+            const dist = spread(touches);
+            if (pinch.dist > 0 && dist > 0) zoomBy(scene, canvas(), middle(touches), dist / pinch.dist);
+            pinch.dist = dist;
+            return;
+          }
+          if (ev.pointerType === "mouse") scene.mouse = deviceToWorld(scene, d);
+          if (touches.size === 1) dragTo(scene, d);
+          canvas().style.cursor = scene.drag?.moved ? "grabbing" : scene.mouse && hitTest(scene, scene.mouse) ? "pointer" : "grab";
+        }}
+        onPointerUp={(ev) => {
+          touches.delete(ev.pointerId);
+          if (touches.size > 0) return;
+          pinch.dist = 0;
           const g = scene.drag;
           scene.drag = null;
-          if (g?.moved) return;
+          if (!g || g.moved) return;
           const hit = hitTest(scene, deviceToWorld(scene, devicePoint(canvas(), ev)));
           setSelectedEmployee(hit ? hit.id : null);
         }}
-        onDoubleClick={() => resetCamera(scene)}
-        onMouseLeave={() => {
-          scene.mouse = null;
+        onPointerCancel={(ev) => {
+          touches.delete(ev.pointerId);
+          pinch.dist = 0;
           scene.drag = null;
+        }}
+        onDoubleClick={() => resetCamera(scene)}
+        onPointerLeave={(ev) => {
+          if (ev.pointerType !== "mouse") return;
+          scene.mouse = null;
+          if (!touches.size) scene.drag = null;
         }}
       />
       <div className="zoom-ctl">
@@ -119,4 +148,17 @@ export function Office() {
       </div>
     </div>
   );
+}
+
+type Pt = { x: number; y: number };
+const pts = (m: Map<number, Pt>) => [...m.values()].slice(0, 2);
+/** Distance between the first two fingers. */
+function spread(m: Map<number, Pt>): number {
+  const [a, b] = pts(m);
+  return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+}
+/** Point between the first two fingers: the pinch zooms around it. */
+function middle(m: Map<number, Pt>): Pt {
+  const [a, b] = pts(m);
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }

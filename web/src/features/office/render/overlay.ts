@@ -5,6 +5,9 @@ import { FONT, U, type Actor, type Scene } from "../engine/scene";
 import { hitTest, toScreen } from "../engine/camera";
 import { C } from "../sprites/draw";
 
+/** Touch screen (phone / tablet): hints talk about fingers instead of the mouse. */
+const TOUCH = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+
 /** Scratch canvas for sharp-bilinear scaling at non-integer zoom. */
 let bigCanvas: HTMLCanvasElement | null = null;
 
@@ -74,7 +77,13 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     ctx,
     8,
     ctx.canvas.height - fs - 8,
-    scene.cam.manual ? "Lăn chuột / nút +− : zoom · Kéo: di chuyển · Nhấp đúp: vừa khung" : "Lăn chuột hoặc bấm + để phóng to",
+    TOUCH
+      ? scene.cam.manual
+        ? "Chụm 2 ngón: zoom · Kéo: di chuyển · Nút ⤢: vừa khung"
+        : "Chụm 2 ngón hoặc bấm + để phóng to"
+      : scene.cam.manual
+        ? "Lăn chuột / nút +− : zoom · Kéo: di chuyển · Nhấp đúp: vừa khung"
+        : "Lăn chuột hoặc bấm + để phóng to",
     fs * 0.85,
     "rgba(20,18,31,0.7)",
     C.silver,

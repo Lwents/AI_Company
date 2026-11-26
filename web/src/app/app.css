@@ -2,6 +2,7 @@
 
 .app {
   height: 100%;
+  height: 100dvh; /* phones: the visible area, without the browser bars */
   display: flex;
   flex-direction: column;
 }
@@ -144,5 +145,91 @@ nav button.on {
   }
   .hstats .hproj {
     display: none;
+  }
+}
+
+.only-mobile {
+  display: none;
+}
+.nowrap {
+  white-space: nowrap;
+}
+
+/* Phones: header on one line, one row of scrollable tabs, then either the office or a panel. */
+@media (max-width: 700px) {
+  header {
+    padding: 6px 10px;
+    gap: 8px;
+  }
+  .brand {
+    gap: 8px;
+    min-width: 0;
+  }
+  .brand b {
+    font-size: 22px;
+    white-space: nowrap;
+  }
+  .logo {
+    width: 30px;
+    height: 30px;
+    font-size: 18px;
+  }
+  .hstats {
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .hide-mobile,
+  .conn-label {
+    display: none;
+  }
+  main {
+    flex-direction: column;
+  }
+  aside {
+    display: contents;
+  }
+  nav {
+    order: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 6px 6px 0;
+    flex-shrink: 0;
+    -webkit-overflow-scrolling: touch;
+  }
+  nav::-webkit-scrollbar {
+    display: none;
+  }
+  nav button {
+    flex: none;
+    white-space: nowrap;
+    padding: 4px 12px 6px;
+  }
+  .only-mobile {
+    display: inline-flex;
+  }
+  .left {
+    order: 1;
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+  .panel {
+    order: 2;
+    background: var(--panel);
+  }
+  main.view-panel .left,
+  main.view-office .panel {
+    display: none;
+  }
+  .panel-body {
+    padding: 8px;
+    gap: 10px;
+  }
+  /* 16px+ inputs: iOS does not zoom the page on focus. */
+  input,
+  textarea,
+  select {
+    font-size: 18px;
   }
 }

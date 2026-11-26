@@ -14,7 +14,7 @@ export function Header() {
         <span className="logo">AI</span>
         <div>
           <b>AI Company</b>
-          <div className="small muted">Công ty phần mềm do AI vận hành</div>
+          <div className="small muted hide-mobile">Công ty phần mềm do AI vận hành</div>
         </div>
       </div>
       <div className="hstats">
@@ -24,8 +24,14 @@ export function Header() {
             <span className={`pill ${PROJECT_STATUS[project.status].tone}`}>{PROJECT_STATUS[project.status].label}</span>
           </span>
         )}
-        <span className="small muted">Tổng chi: {usd(total)}</span>
-        <span className={`conn ${connected ? "on" : ""}`}>{connected ? "● Đã kết nối" : "○ Mất kết nối"}</span>
+        <span className="small muted nowrap">
+          <span className="hide-mobile">Tổng chi: </span>
+          {usd(total)}
+        </span>
+        <span className={`conn ${connected ? "on" : ""}`} title={connected ? "Đã kết nối" : "Mất kết nối"}>
+          {connected ? "●" : "○"}
+          <span className="conn-label"> {connected ? "Đã kết nối" : "Mất kết nối"}</span>
+        </span>
         {runtime.enabled && (
           <button className="ghost small" onClick={logout} title={runtime.user ? `Đang đăng nhập: ${runtime.user}` : undefined}>
             Đăng xuất

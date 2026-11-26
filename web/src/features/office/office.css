@@ -8,6 +8,8 @@
   position: absolute;
   inset: 0;
   image-rendering: pixelated;
+  /* The canvas handles drag and pinch itself: no page scroll / browser zoom on it. */
+  touch-action: none;
 }
 .office.loading {
   display: grid;
@@ -31,4 +33,13 @@
   padding: 0;
   font-size: 22px;
   line-height: 1;
+}
+
+/* Phones: bigger zoom buttons for fingers. */
+@media (max-width: 700px) {
+  .zoom-ctl button {
+    min-width: 40px;
+    min-height: 40px;
+    font-size: 24px;
+  }
 }

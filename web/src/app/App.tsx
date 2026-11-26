@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useStore } from "@/store";
 import { ErrorBoundary } from "@/shared/ui/ErrorBoundary";
 import { DialogHost } from "@/shared/ui/Dialog";
@@ -13,11 +14,13 @@ export function App() {
   const { state, tab, setTab } = useStore();
   const active = TABS.find((t) => t.id === tab) ?? TABS[0];
   const Panel = active.panel;
+  // Phones show one thing at a time: the office or a panel (the "Văn phòng" tab only exists there).
+  const [view, setView] = useState<"office" | "panel">("panel");
 
   return (
     <div className="app">
       <Header />
-      <main>
+      <main className={`view-${view}`}>
         <div className="left">
           <ErrorBoundary label="Văn phòng">{state ? <Office /> : <div className="office loading">Đang kết nối backend…</div>}</ErrorBoundary>
           <ErrorBoundary label="Thông tin nhân viên">
@@ -27,10 +30,20 @@ export function App() {
         </div>
         <aside>
           <nav>
+            <button className={`only-mobile ${view === "office" ? "on" : ""}`} onClick={() => setView("office")}>
+              Văn phòng
+            </button>
             {TABS.map((t) => {
               const n = state && t.badge ? t.badge(state) : 0;
               return (
-                <button key={t.id} className={t.id === active.id ? "on" : ""} onClick={() => setTab(t.id)}>
+                <button
+                  key={t.id}
+                  className={t.id === active.id && view === "panel" ? "on" : ""}
+                  onClick={() => {
+                    setTab(t.id);
+                    setView("panel");
+                  }}
+                >
                   {t.label}
                   {n > 0 && <span className="badge">{n}</span>}
                 </button>
