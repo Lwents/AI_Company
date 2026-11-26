@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod auth;
 mod config;
 mod gitflow;
 mod harness;
@@ -49,8 +50,27 @@ async fn main() {
     unsafe {
         SetConsoleOutputCP(65001);
     }
+    // `ai-company hash-password`: reads a password from stdin, prints the AUTH_PASSWORD_HASH value.
+    if std::env::args().nth(1).as_deref() == Some("hash-password") {
+        let mut pw = String::new();
+        let _ = std::io::stdin().read_line(&mut pw);
+        let pw = pw.trim_end_matches(['\r', '\n']);
+        if pw.chars().count() < 10 {
+            eprintln!("Mật khẩu quá ngắn (tối thiểu 10 ký tự)");
+            std::process::exit(1);
+        }
+        println!("{}", auth::hash_password(pw));
+        return;
+    }
+    // Other processes of the same user (e.g. code the agents run) must not read this
+    // process's memory or /proc/<pid>/environ, where API keys live.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     let root = project_root();
     let _ = dotenvy::from_path(root.join(".env"));
+    let login = auth::init();
     let store = store::Store::load(&root);
 
     // Persist state periodically (only when something changed).
@@ -66,6 +86,23 @@ async fn main() {
 
     // Customers, support, maintenance for launched products.
     ops::spawn(store.clone());
+
+    // On a server, an update restarts the process: carry on with the projects it interrupted.
+    if std::env::var("RESUME_ON_START").is_ok_and(|v| v == "1") {
+        let ids = std::mem::take(&mut *store.interrupted.lock().unwrap());
+        if !ids.is_empty() {
+            let store = store.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                for id in ids {
+                    if store.project(&id).is_some_and(|p| p.status == types::ProjectStatus::Paused) {
+                        store.post_message(Some(&id), "system", "all", "Hệ thống vừa cập nhật phiên bản mới, dự án tự chạy tiếp từ bước đang dở.", "chat");
+                        workflow::start(&store, &id);
+                    }
+                }
+            });
+        }
+    }
 
     // Optional public address for customers (portal + product only), e.g. PORTAL_BIND=0.0.0.0:8790
     if let Ok(bind) = std::env::var("PORTAL_BIND") {
@@ -85,7 +122,10 @@ async fn main() {
     }
 
     let dist = root.join("web").join("dist");
-    let app = api::router(store.clone()).fallback_service(ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html"))));
+    let app = api::router(store.clone())
+        .fallback_service(ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html"))))
+        // Login (when configured) guards every route, the static UI included.
+        .layer(axum::middleware::from_fn(auth::guard));
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);
     // Localhost only: agents can run commands, so the API must never be exposed to the network.
@@ -99,6 +139,7 @@ async fn main() {
     };
     println!("AI Company đang chạy: http://{addr}");
     println!("Thư mục dự án: {}", root.display());
+    println!("{}", if login { "Đăng nhập: BẬT" } else { "Đăng nhập: tắt (chỉ dùng trên máy này)" });
     if !dist.exists() {
         println!("(Chưa build giao diện: chạy `npm run build` hoặc dùng `npm run dev` ở cổng 5173)");
     }
@@ -106,6 +147,16 @@ async fn main() {
     let shutdown_store = store.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
+            // Ctrl+C, or SIGTERM from systemd on Linux.
+            #[cfg(unix)]
+            {
+                let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
             let _ = tokio::signal::ctrl_c().await;
             shutdown_store.save_if_dirty();
         })

@@ -200,3 +200,54 @@ mod tests {
         assert!(c_vn.contains("đã rút gọn"));
     }
 }
+
+// ---- Shared rate-limit gate (learned from OpenClaw "model failover") ----
+// When one employee hits 429 on an endpoint+model, every other employee calling the same
+// endpoint+model waits for that retry floor instead of hammering the proxy, then resumes
+// one at a time with a little jitter. State is in memory and simply expires.
+
+static GATES: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>> = std::sync::Mutex::new(None);
+
+/// Records that `key` (endpoint|model) must not be called again for `wait`.
+pub fn gate_block(key: &str, wait: Duration) {
+    if wait < Duration::from_secs(2) {
+        return;
+    }
+    let until = std::time::Instant::now() + wait;
+    let mut g = GATES.lock().unwrap();
+    let m = g.get_or_insert_with(Default::default);
+    let e = m.entry(key.to_string()).or_insert(until);
+    if *e < until {
+        *e = until;
+    }
+}
+
+/// How long a call to `key` still has to wait (None = free to go).
+pub fn gate_remaining(key: &str) -> Option<Duration> {
+    let now = std::time::Instant::now();
+    let mut g = GATES.lock().unwrap();
+    let m = g.get_or_insert_with(Default::default);
+    m.retain(|_, until| *until > now);
+    m.get(key).map(|until| *until - now)
+}
+
+/// Waits until `key` is open; adds 100–250 ms jitter so queued calls don't all fire at once.
+pub async fn gate_wait(key: &str) {
+    while let Some(left) = gate_remaining(key) {
+        let jitter = 100 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0) % 150) as u64;
+        tokio::time::sleep(left + Duration::from_millis(jitter)).await;
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    #[test]
+    fn gate_blocks_and_expires() {
+        gate_block("t|m", Duration::from_secs(1)); // too short: ignored
+        assert!(gate_remaining("t|m").is_none());
+        gate_block("t|m2", Duration::from_secs(30));
+        assert!(gate_remaining("t|m2").unwrap() > Duration::from_secs(25));
+        assert!(gate_remaining("t|other").is_none());
+    }
+}

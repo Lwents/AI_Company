@@ -19,7 +19,12 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 dotenvy = "0.15"
 fastrand = "2"
+argon2 = "0.5"
+getrandom = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

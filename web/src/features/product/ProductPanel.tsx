@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import "./product.css";
+import { previewUrl } from "@/shared/runtime";
 
 interface FileInfo {
   path: string;
@@ -246,14 +247,14 @@ export function ProductPanel() {
           {hasIndex && (
             <div className="row gap4">
               <button onClick={() => { setPreview(!preview); setNonce(Date.now()); }}>{preview ? "Ẩn xem thử" : "Xem thử"}</button>
-              <a className="btn" href={`/preview/${project.id}/`} target="_blank" rel="noreferrer">
+              <a className="btn" href={previewUrl(project.id)} target="_blank" rel="noreferrer">
                 Mở tab mới
               </a>
             </div>
           )}
         </div>
         <p className="muted small mono clip">{dir}</p>
-        {preview && hasIndex && <iframe className="preview" title="preview" src={`/preview/${project.id}/?v=${nonce}`} sandbox="allow-scripts allow-forms allow-modals" />}
+        {preview && hasIndex && <iframe className="preview" title="preview" src={previewUrl(project.id, `?v=${nonce}`)} sandbox="allow-scripts allow-forms allow-modals" />}
       </section>
       {open && (
         <section className="card">

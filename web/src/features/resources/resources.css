@@ -15,11 +15,13 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 4px;
+  cursor: pointer;
 }
-.res-refresh {
-  padding: 0 6px;
-  min-width: 0;
+.res-head:focus-visible {
+  outline: 2px solid var(--amber);
+}
+.res-acc.open {
+  outline: 2px solid var(--accent-hi);
 }
 .res-source {
   display: flex;
@@ -68,7 +70,7 @@
 }
 .res-row {
   display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(120px, 2fr) 92px;
+  grid-template-columns: 112px minmax(100px, 1fr) 92px;
   gap: 10px;
   align-items: center;
   padding: 4px 0;
@@ -76,6 +78,7 @@
 }
 .res-q {
   white-space: nowrap;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }

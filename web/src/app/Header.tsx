@@ -1,6 +1,7 @@
 import { useStore } from "@/store";
 import { PROJECT_STATUS } from "@/shared/labels";
 import { usd } from "@/shared/format";
+import { logout, runtime } from "@/shared/runtime";
 
 export function Header() {
   const { state, connected, selectedProject } = useStore();
@@ -25,6 +26,11 @@ export function Header() {
         )}
         <span className="small muted">Tổng chi: {usd(total)}</span>
         <span className={`conn ${connected ? "on" : ""}`}>{connected ? "● Đã kết nối" : "○ Mất kết nối"}</span>
+        {runtime.enabled && (
+          <button className="ghost small" onClick={logout} title={runtime.user ? `Đang đăng nhập: ${runtime.user}` : undefined}>
+            Đăng xuất
+          </button>
+        )}
       </div>
     </header>
   );

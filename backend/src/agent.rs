@@ -70,6 +70,37 @@ fn take_inbox(store: &S, emp_id: &str, project_id: &str) -> Option<String> {
     (!msgs.is_empty()).then(|| format!("\n\nTin nhắn mới gửi bạn:\n{}", msgs.join("\n")))
 }
 
+/// Session pruning (OpenClaw): only the latest tool turns keep their full output. Older tool
+/// results (whole files, long command logs…) shrink to head + tail so every later model call is
+/// cheaper and more focused. The beginning and end survive, so exit codes and errors stay visible.
+const KEEP_FULL_TOOL_TURNS: usize = 3;
+const PRUNED_TOOL_CHARS: usize = 2000;
+
+fn prune_tool_results(messages: &mut [LlmMessage], keep: usize) {
+    let mut seen = 0;
+    for m in messages.iter_mut().rev() {
+        let LlmMessage::User { tool_results, .. } = m else { continue };
+        if tool_results.is_empty() {
+            continue;
+        }
+        seen += 1;
+        if seen <= keep {
+            continue;
+        }
+        for r in tool_results.iter_mut() {
+            r.images.clear();
+            let n = r.content.chars().count();
+            if n > PRUNED_TOOL_CHARS {
+                let head: String = r.content.chars().take(PRUNED_TOOL_CHARS * 6 / 10).collect();
+                let tail: String = r.content.chars().skip(n - PRUNED_TOOL_CHARS * 3 / 10).collect();
+                r.content = format!("{head}
+…[đã rút gọn {} ký tự của kết quả cũ; đọc lại tệp nếu cần]…
+{tail}", n - head.chars().count() - tail.chars().count());
+            }
+        }
+    }
+}
+
 async fn budget_gate(store: &S, project_id: &str, emp_id: &str, cancel: &CancellationToken) -> Result<(), String> {
     loop {
         let Some(p) = store.project(project_id) else { return Err("Dự án không tồn tại".into()) };
@@ -619,7 +650,20 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         } else {
             None
         };
-        messages.push(LlmMessage::User { text: budget_hint, tool_results: results });
+        // Steering (OpenClaw): messages from the chairman / colleagues that arrived while working
+        // are delivered right after the current tool batch, so the employee can change course mid-task.
+        let steer = if ctx.outcome.is_none() { take_inbox(store, &emp.id, &project.id) } else { None };
+        if steer.is_some() {
+            store.log_activity(&emp.id, pid, "tool", "Nhận tin nhắn mới giữa chừng, cân nhắc điều chỉnh");
+        }
+        let steer = steer.map(|m| format!("{m}
+(Tin nhắn vừa đến trong lúc bạn đang làm. Đọc kỹ và điều chỉnh hướng làm nếu cần; tin của Chủ tịch được ưu tiên hơn kế hoạch cũ.)"));
+        let text = match (budget_hint, steer) {
+            (Some(h), Some(m)) => Some(format!("{h}{m}")),
+            (h, m) => h.or(m),
+        };
+        messages.push(LlmMessage::User { text, tool_results: results });
+        prune_tool_results(&mut messages, KEEP_FULL_TOOL_TURNS);
         if let Some(outcome) = ctx.outcome.take() {
             return Ok(JobResult { outcome, created_tickets: ctx.created_tickets });
         }
@@ -635,6 +679,21 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prunes_only_old_tool_results() {
+        let big = "x".repeat(10_000);
+        let tr = |c: &str| LlmMessage::User { text: None, tool_results: vec![ToolResult { id: "1".into(), content: c.into(), is_error: false, images: vec![("image/png".into(), "AA".into())] }] };
+        let mut m = vec![tr(&big), tr(&big), tr(&big), tr(&big), LlmMessage::User { text: Some("hi".into()), tool_results: vec![] }];
+        prune_tool_results(&mut m, 3);
+        let len = |m: &LlmMessage| match m { LlmMessage::User { tool_results, .. } => tool_results[0].content.chars().count(), _ => 0 };
+        assert!(len(&m[0]) < 2200, "oldest pruned");
+        assert!(matches!(&m[0], LlmMessage::User { tool_results, .. } if tool_results[0].images.is_empty()));
+        assert_eq!(len(&m[1]), 10_000);
+        assert_eq!(len(&m[3]), 10_000);
+        prune_tool_results(&mut m, 3); // idempotent
+        assert!(len(&m[0]) < 2200);
+    }
 
     #[test]
     fn detects_text_refusals_without_false_positives() {

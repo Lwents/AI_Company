@@ -5,6 +5,7 @@ import { confirmDialog } from "@/shared/ui/Dialog";
 import { PHASES, PROJECT_STATUS } from "@/shared/labels";
 import { usd } from "@/shared/format";
 import type { Project } from "@/api/types";
+import { previewUrl } from "@/shared/runtime";
 
 /** Last part of a path / URL (the full value is shown on hover). */
 function shortSource(src: string): string {
@@ -113,7 +114,7 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
               <b>Báo cáo của CEO</b>
               <p>{p.report || "(trống)"}</p>
               <div className="row">
-                <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+                <a className="btn" href={previewUrl(p.id)} target="_blank" rel="noreferrer">
                   Mở sản phẩm
                 </a>
                 <button className="primary" onClick={() => act("approve")}>
@@ -134,7 +135,7 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
                 <a className="btn" href={`/portal/${p.id}/`} target="_blank" rel="noreferrer">
                   Cổng khách hàng
                 </a>
-                <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+                <a className="btn" href={previewUrl(p.id)} target="_blank" rel="noreferrer">
                   Sản phẩm
                 </a>
               </div>
@@ -146,7 +147,7 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
           )}
           {p.status === "done" && (
             <div className="row">
-              <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+              <a className="btn" href={previewUrl(p.id)} target="_blank" rel="noreferrer">
                 Mở sản phẩm
               </a>
               <input placeholder="Muốn thêm tính năng? Ghi vào đây" value={feedback} onChange={(e) => setFeedback(e.target.value)} />

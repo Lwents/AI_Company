@@ -6,6 +6,10 @@ export async function api<T = any>(method: string, url: string, body?: unknown):
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
+  if (res.status === 401) {
+    // Session expired on a server with login: go sign in again.
+    location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+  }
   if (!res.ok) throw new Error(text || res.statusText);
   return text ? JSON.parse(text) : (undefined as T);
 }

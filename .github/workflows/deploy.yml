@@ -1,0 +1,90 @@
+name: Build & deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push waits instead of cutting an install short.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04 # same glibc as the server
+    env:
+      # backend/rust-toolchain.toml pins the Windows toolchain used on the dev machine.
+      RUSTUP_TOOLCHAIN: stable
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Frontend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Test
+        run: cargo test --release --manifest-path backend/Cargo.toml
+
+      - name: Build
+        run: cargo build --release --manifest-path backend/Cargo.toml
+
+      - name: Package
+        run: |
+          mkdir -p pkg/web
+          cp backend/target/release/ai-company pkg/
+          cp -r web/dist pkg/web/dist
+          cp -r skills pkg/skills
+          cp mcp.json pkg/
+          tar -czf release.tgz -C pkg .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            release.tgz
+            deploy/deploy.sh
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+
+      - name: Upload & install
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          SSH="ssh -i $HOME/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          scp -i ~/.ssh/deploy_key -o BatchMode=yes release.tgz deploy/deploy.sh "aico@$HOST:/opt/ai-company/incoming/"
+          $SSH "aico@$HOST" 'bash /opt/ai-company/incoming/deploy.sh /opt/ai-company/incoming/release.tgz'

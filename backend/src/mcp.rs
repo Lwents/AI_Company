@@ -34,6 +34,24 @@ pub struct ServerConfig {
     /// Optional allowlist: when non-empty, ONLY these tool names are exposed to employees.
     #[serde(default)]
     pub include: Vec<String>,
+    /// Operating systems this server runs on ("windows", "linux", "macos"); empty = all.
+    #[serde(default)]
+    pub os: Vec<String>,
+    /// Replacement `args` on Linux (e.g. chromium instead of Edge).
+    #[serde(default, rename = "argsLinux")]
+    pub args_linux: Option<Vec<String>>,
+}
+
+impl ServerConfig {
+    fn for_this_os(&self) -> bool {
+        self.os.is_empty() || self.os.iter().any(|o| o == std::env::consts::OS)
+    }
+    fn effective_args(&self) -> &[String] {
+        match (&self.args_linux, std::env::consts::OS) {
+            (Some(a), "linux") => a,
+            _ => &self.args,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -191,6 +209,7 @@ impl Session {
             .into_iter()
             .filter(|(name, c)| {
                 c.enabled
+                    && c.for_this_os()
                     && (c.roles.is_empty() || c.roles.iter().any(|r| r == &rk))
                     && (name != "browser" || browser_phase(phase))
                     && (name != "desktop" || desktop_phase(phase))
@@ -296,6 +315,8 @@ impl Drop for Session {
             if let Some(pid) = c.child.id() {
                 if cfg!(windows) {
                     let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                } else {
+                    let _ = std::process::Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
                 }
             }
             let _ = c.child.start_kill();
@@ -308,13 +329,16 @@ async fn start_server(root: &Path, dir: &Path, cfg: &ServerConfig) -> Result<(Co
     let direct_exe = cfg!(windows) && cfg.command.to_lowercase().ends_with(".exe");
     let mut cmd = if cfg!(windows) && !direct_exe {
         let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(&cfg.command).args(&cfg.args);
+        c.arg("/C").arg(&cfg.command).args(cfg.effective_args());
         c
     } else {
         let mut c = tokio::process::Command::new(&cfg.command);
-        c.args(&cfg.args);
+        c.args(cfg.effective_args());
         c
     };
+    // Own process group, so the whole tree (npx → node → browser) can be stopped together.
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     for k in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "CUSTOM_API_KEY"] {
         cmd.env_remove(k);

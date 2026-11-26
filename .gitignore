@@ -4,3 +4,4 @@ backend/target/
 data/
 workspace/
 .env
+backend/target-*/

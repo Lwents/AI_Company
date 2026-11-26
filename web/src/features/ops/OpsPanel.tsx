@@ -5,6 +5,7 @@ import { confirmDialog } from "@/shared/ui/Dialog";
 import { USD_TO_VND, vnd } from "@/shared/format";
 import { CaseRow } from "./CaseRow";
 import "./ops.css";
+import { previewUrl } from "@/shared/runtime";
 
 export function OpsPanel() {
   const { state, selectedProject } = useStore();
@@ -59,10 +60,10 @@ export function OpsPanel() {
               </a>
             </div>
             <div className="row wrap">
-              <a className="btn" href={`/preview/${p.id}/`} target="_blank" rel="noreferrer">
+              <a className="btn" href={previewUrl(p.id)} target="_blank" rel="noreferrer">
                 Sản phẩm
               </a>
-              <a className="btn" href={`/preview/${p.id}/marketing/landing.html`} target="_blank" rel="noreferrer">
+              <a className="btn" href={previewUrl(p.id, "marketing/landing.html")} target="_blank" rel="noreferrer">
                 Landing page
               </a>
               <button onClick={() => act("simulate")}>Tạo 4 khách hàng thử</button>

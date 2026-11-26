@@ -212,6 +212,10 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
 pub fn safe_path(dir: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim().replace('\\', "/");
     let rel = rel.trim_start_matches("./");
+    // Windows drive paths ("C:/…") are absolute there; refuse them on every OS.
+    if rel.as_bytes().get(1) == Some(&b':') {
+        return Err(format!("Đường dẫn không hợp lệ: {rel} (chỉ dùng đường dẫn tương đối trong dự án)"));
+    }
     let p = Path::new(rel);
     let mut out = dir.to_path_buf();
     for c in p.components() {
@@ -801,6 +805,10 @@ async fn kill_process_tree(child: &mut tokio::process::Child) {
             .creation_flags(0x0800_0000);
         let _ = tokio::time::timeout(Duration::from_secs(5), tk.status()).await;
     }
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let _ = tokio::process::Command::new("kill").args(["-KILL", &format!("-{pid}")]).status().await;
+    }
     let _ = child.kill().await;
 }
 
@@ -866,6 +874,7 @@ async fn run_command(ctx: &mut Ctx, command: &str, timeout_secs: u64) -> Result<
     let mut cmd = {
         let mut c = tokio::process::Command::new("sh");
         c.arg("-c").arg(command);
+        c.process_group(0);
         c
     };
     cmd.current_dir(&ctx.dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);

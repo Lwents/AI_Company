@@ -38,6 +38,8 @@ pub struct Store {
     /// Operations (live projects): cancellation per project, cases / projects currently being handled.
     pub ops_cancels: Mutex<HashMap<String, CancellationToken>>,
     pub ops_busy: Mutex<std::collections::HashSet<String>>,
+    /// Projects that were running when the server stopped (see RESUME_ON_START).
+    pub interrupted: Mutex<Vec<String>>,
     pub data_dir: PathBuf,
     pub workspace_dir: PathBuf,
 }
@@ -65,9 +67,11 @@ impl Store {
             st.employees = config::default_employees();
         }
         // Nothing is running after a restart.
+        let mut interrupted = vec![];
         for p in &mut st.projects {
             if p.status == ProjectStatus::Running {
                 p.status = ProjectStatus::Paused;
+                interrupted.push(p.id.clone());
             }
         }
         for a in &mut st.approvals {
@@ -89,6 +93,7 @@ impl Store {
             inbox_read: Mutex::new(HashMap::new()),
             ops_cancels: Mutex::new(HashMap::new()),
             ops_busy: Mutex::new(std::collections::HashSet::new()),
+            interrupted: Mutex::new(interrupted),
             data_dir,
             workspace_dir,
         })

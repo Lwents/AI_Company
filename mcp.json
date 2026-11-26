@@ -3,6 +3,7 @@
     "browser": {
       "command": "npx",
       "args": ["-y", "@playwright/mcp@0.0.84", "--browser", "msedge", "--headless", "--isolated", "--viewport-size", "1280,800", "--image-responses", "allow"],
+      "argsLinux": ["-y", "@playwright/mcp@0.0.84", "--browser", "chromium", "--headless", "--isolated", "--no-sandbox", "--viewport-size", "1280,800", "--image-responses", "allow"],
       "roles": ["pm", "designer", "dev", "reviewer", "tester", "devops", "security"],
       "exclude": ["browser_run_code_unsafe", "browser_file_upload"],
       "hint": "Trình duyệt thật (github.com/microsoft/playwright-mcp). Mở bản xem thử, bấm / gõ như người dùng, browser_snapshot để đọc trang, browser_take_screenshot để XEM giao diện, browser_resize để thử cỡ điện thoại (375x812), browser_console_messages để xem lỗi JS."
@@ -10,6 +11,7 @@
     "desktop": {
       "command": "C:\\Users\\Lwent\\AppData\\Roaming\\npm\\node_modules\\agent-desktop\\bin\\agent-desktop-win32-x64.exe",
       "args": ["mcp"],
+      "os": ["windows"],
       "roles": ["tester"],
       "exclude": [
         "desktop_skills_list",

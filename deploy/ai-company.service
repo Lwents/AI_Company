@@ -1,0 +1,37 @@
+[Unit]
+Description=AI Company (AI employees + office UI)
+After=network-online.target 9router.service
+Wants=network-online.target
+
+[Service]
+User=aico
+Group=aico
+WorkingDirectory=/opt/ai-company
+Environment=AI_COMPANY_ROOT=/opt/ai-company
+# 8787 is taken by another app on this VPS.
+Environment=PORT=18787
+# Secrets (API key, login hash). Root-only file: the service reads it at start,
+# the code the AI employees run (as user aico) cannot.
+EnvironmentFile=/etc/ai-company/env
+ExecStart=/opt/ai-company/ai-company
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+# Hardening: agents run commands, so keep them away from the rest of the server.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ai-company /home/aico
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Leave room for 9router and the other sites on this VPS.
+MemoryHigh=1400M
+MemoryMax=1800M
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

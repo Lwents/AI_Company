@@ -7,6 +7,7 @@ interface Account {
   provider: string;
   name?: string;
   email?: string;
+  authType?: string;
   isActive?: boolean;
   testStatus?: string;
   lastError?: string;
@@ -99,7 +100,8 @@ export function ResourcesPanel() {
       // The same accounts copied to several 9routers share one quota: show them once (first reachable source wins).
       const seen = new Set<string>();
       list = all.map((s) => {
-        const accounts = s.error ? [] : s.accounts.filter((a) => !seen.has(a.id));
+        // API-key accounts (e.g. OpenRouter) have no 5h / weekly quota to track.
+        const accounts = s.error ? [] : s.accounts.filter((a) => a.authType !== "apikey" && !seen.has(a.id));
         const dup = s.accounts.length - accounts.length;
         accounts.forEach((a) => seen.add(a.id));
         return { ...s, accounts, dup };
@@ -165,11 +167,15 @@ export function ResourcesPanel() {
 }
 
 function AccountCard({ a, q, onRefresh }: { a: Account; q?: QState; onRefresh: () => void }) {
+  const [open, setOpen] = useState(false);
   const st = status(a);
   const rows = q?.data?.quotas ?? [];
+  // The tightest limit is what stops the account first.
+  const limited = rows.filter((r) => !r.unlimited && typeof r.remainingPct === "number");
+  const min = limited.length ? Math.min(...limited.map(pctOf)) : null;
   return (
-    <div className="res-acc">
-      <div className="res-head">
+    <div className={`res-acc ${open ? "open" : ""}`}>
+      <div className="res-head" role="button" tabIndex={0} onClick={() => setOpen((o) => !o)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setOpen((o) => !o)}>
         <span className="res-name clip" title={a.email || a.name}>
           {a.email || a.name || a.id}
         </span>
@@ -177,13 +183,20 @@ function AccountCard({ a, q, onRefresh }: { a: Account; q?: QState; onRefresh: (
         <span className={`pill ${st.cls}`} title={a.lastError || undefined}>
           {st.label}
         </span>
-        <button className="ghost res-refresh" onClick={onRefresh} disabled={q?.loading} title="Làm mới tài khoản này">
-          ↻
-        </button>
+        <span className={`res-min ${min !== null ? tone(min) : "muted"}`}>{min !== null ? `${Math.round(min)}%` : q?.loading ? "…" : "–"}</span>
+        <span className="muted">{open ? "▾" : "▸"}</span>
       </div>
+      {min !== null && (
+        <div className="minibar">
+          <div className={`res-fill ${tone(min)}`} style={{ width: `${min}%` }} />
+        </div>
+      )}
+      {open && (
+        <div className="res-body">
       {q?.loading && !q.data && <p className="muted small">Đang tải…</p>}
       {q?.err && <p className="error small">{q.err}</p>}
       {q?.data?.message && <p className="muted small">{q.data.message === NO_QUOTA ? "Không có thông tin quota (tài khoản API key)." : q.data.message}</p>}
+      {a.lastError && <p className="error small">Lỗi gần nhất: {a.lastError}</p>}
       {rows.map((r) => {
         const pct = pctOf(r);
         return (
@@ -204,6 +217,14 @@ function AccountCard({ a, q, onRefresh }: { a: Account; q?: QState; onRefresh: (
           </div>
         );
       })}
+          <div className="row between small">
+            <span />
+            <button className="ghost" onClick={onRefresh} disabled={q?.loading}>
+              ↻ Làm mới tài khoản này
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

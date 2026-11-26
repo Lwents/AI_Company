@@ -125,7 +125,10 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
     let mut data: Option<Value> = None;
     'endpoints: for (bi, b) in bases.iter().enumerate() {
         let url = format!("{b}/chat/completions");
+        let gate = format!("{b}|{}", e.model);
         for attempt in 0..MAX_ATTEMPTS {
+            // Another employee just hit a rate limit on this endpoint+model: wait with them.
+            super::gate_wait(&gate).await;
             let mut rb = http().post(&url).json(&body);
             if let Some(k) = &key {
                 rb = rb.bearer_auth(k);
@@ -158,7 +161,11 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
                             return Err(last_err);
                         }
                         // 9router says how long an account is cooling down ("reset after 1m 19s").
-                        super::reset_after(&text).unwrap_or_else(|| backoff(attempt, retry_after.as_ref()))
+                        let w = super::reset_after(&text).unwrap_or_else(|| backoff(attempt, retry_after.as_ref()));
+                        if status.as_u16() == 429 {
+                            super::gate_block(&gate, w);
+                        }
+                        w
                     }
                 }
             };
