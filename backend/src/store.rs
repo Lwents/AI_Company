@@ -218,6 +218,8 @@ impl Store {
             output_price: o,
             base_url: String::new(),
             extra_prompt: String::new(),
+            skill_text: String::new(),
+            skill_file: String::new(),
             color: config::COLORS[n % config::COLORS.len()].into(),
             enabled: true,
         };

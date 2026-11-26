@@ -28,12 +28,16 @@ pub fn router(store: S) -> Router {
         .route("/api/projects/{id}", axum::routing::delete(delete_project))
         .route("/api/projects/{id}/files", get(project_files))
         .route("/api/projects/{id}/file", get(project_file))
+        .route("/api/projects/{id}/file/raw", get(project_file_raw))
         .route("/api/projects/{id}/download", get(download_source))
         .route("/api/projects/{id}/versions/{n}", get(download_version))
         .route("/api/projects/{id}/{action}", post(project_action))
         .route("/api/approvals/{id}", post(resolve_approval))
         .route("/api/employees", post(create_employee))
         .route("/api/employees/{id}", put(update_employee).delete(delete_employee))
+        .route("/api/skills", get(list_skills))
+        .route("/api/resources", get(resource_accounts))
+        .route("/api/resources/{src}/{id}", get(resource_quota))
         .route("/api/settings", put(update_settings))
         .route("/api/chat", post(chairman_chat))
         .route("/preview/{id}/{*path}", get(preview))
@@ -380,12 +384,49 @@ struct FileQuery {
     path: String,
 }
 
+fn is_image_ext(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" | "svg")
+}
+
+fn is_binary_ext(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    matches!(
+        ext.as_str(),
+        "apk" | "zip" | "gz" | "tar" | "xz" | "7z" | "rar" | "exe" | "dll" | "so" | "dylib" | "pdf" | "woff" | "woff2" | "ttf" | "otf" | "mp3" | "mp4" | "wav" | "ogg" | "webm" | "pyc" | "pyd" | "wasm" | "db" | "sqlite" | "sqlite3" | "bin"
+    )
+}
+
 async fn project_file(State(store): State<S>, Path(id): Path<String>, Query(q): Query<FileQuery>) -> ApiResult {
     let dir = project_dir(&store, &id)?;
     let p = safe_path(&dir, &q.path).map_err(bad)?;
+    let meta = tokio::fs::metadata(&p).await.map_err(|e| bad(e.to_string()))?;
+    let size = meta.len();
+    if is_image_ext(&q.path) {
+        return Ok(Json(json!({ "path": q.path, "kind": "image", "size": size, "mime": mime(&q.path), "content": "" })));
+    }
+    if is_binary_ext(&q.path) {
+        return Ok(Json(json!({ "path": q.path, "kind": "binary", "size": size, "mime": mime(&q.path), "content": "" })));
+    }
     let bytes = tokio::fs::read(&p).await.map_err(|e| bad(e.to_string()))?;
-    let text: String = String::from_utf8_lossy(&bytes).chars().take(200_000).collect();
-    Ok(Json(json!({ "path": q.path, "content": text })))
+    let probe = &bytes[..bytes.len().min(4096)];
+    if probe.contains(&0) {
+        return Ok(Json(json!({ "path": q.path, "kind": "binary", "size": size, "mime": mime(&q.path), "content": "" })));
+    }
+    const MAX_PREVIEW_CHARS: usize = 50_000;
+    let decoded = String::from_utf8_lossy(&bytes);
+    let truncated = decoded.chars().count() > MAX_PREVIEW_CHARS;
+    let text: String = decoded.chars().take(MAX_PREVIEW_CHARS).collect();
+    Ok(Json(json!({ "path": q.path, "kind": "text", "size": size, "truncated": truncated, "content": text })))
+}
+
+async fn project_file_raw(State(store): State<S>, Path(id): Path<String>, Query(q): Query<FileQuery>) -> Response {
+    let Ok(dir) = project_dir(&store, &id) else { return StatusCode::NOT_FOUND.into_response() };
+    let Ok(p) = safe_path(&dir, &q.path) else { return StatusCode::BAD_REQUEST.into_response() };
+    match tokio::fs::read(&p).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime(&q.path)), (header::CACHE_CONTROL, "no-store")], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Không tìm thấy tệp").into_response(),
+    }
 }
 
 fn mime(path: &str) -> &'static str {
@@ -445,8 +486,8 @@ async fn download_version(State(store): State<S>, Path((id, n)): Path<(String, u
 
 async fn serve_preview(store: S, id: String, path: String) -> Response {
     let Ok(mut dir) = project_dir(&store, &id) else { return StatusCode::NOT_FOUND.into_response() };
-    // Projects with a build step (Vite, …) are previewed from their build output.
-    for out in ["dist", "build"] {
+    // Projects with a build step (Vite, …) are previewed from their build output (root or frontend/).
+    for out in ["dist", "build", "frontend/dist", "frontend/build", "frontend"] {
         let built = dir.join(out);
         if built.join("index.html").is_file() {
             let rel = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path.clone() };
@@ -520,6 +561,15 @@ async fn create_employee(State(store): State<S>, Json(b): Json<NewEmployee>) -> 
     Ok(Json(json!(e)))
 }
 
+async fn list_skills(State(store): State<S>) -> ApiResult {
+    let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let files: Vec<Value> = crate::skills::list_files(&root)
+        .into_iter()
+        .map(|(name, path, content)| json!({ "name": name, "path": path, "content": content }))
+        .collect();
+    Ok(Json(json!({ "files": files })))
+}
+
 async fn update_employee(State(store): State<S>, Path(id): Path<String>, Json(mut e): Json<Employee>) -> ApiResult {
     if store.employee(&id).is_none() {
         return Err(bad("Nhân viên không tồn tại"));
@@ -529,6 +579,12 @@ async fn update_employee(State(store): State<S>, Path(id): Path<String>, Json(mu
     if e.name.is_empty() {
         return Err(bad("Tên không được trống"));
     }
+    e.skill_file = e.skill_file.trim().trim_matches('"').to_string();
+    if !e.skill_file.is_empty() {
+        let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        crate::skills::read_skill_file(&root, &e.skill_file).map_err(bad)?;
+    }
+    e.skill_text = e.skill_text.trim().chars().take(crate::skills::MAX_SKILL_CHARS).collect();
     store.upsert_employee(e.clone());
     Ok(Json(json!(e)))
 }
@@ -574,4 +630,15 @@ async fn chairman_chat(State(store): State<S>, Json(b): Json<ChatBody>) -> ApiRe
     }
     let m = store.post_message(b.project_id.as_deref(), "chairman", &b.to, b.text.trim(), "chat");
     Ok(Json(json!(m)))
+}
+
+async fn resource_accounts() -> ApiResult {
+    Ok(Json(crate::resources::sources().await))
+}
+
+async fn resource_quota(Path((src, id)): Path<(usize, String)>) -> ApiResult {
+    if !crate::resources::valid_id(&id) {
+        return Err(bad("Mã tài khoản không hợp lệ"));
+    }
+    crate::resources::quota(src, &id).await.map(Json).map_err(|e| (StatusCode::BAD_GATEWAY, e))
 }

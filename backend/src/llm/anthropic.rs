@@ -26,6 +26,12 @@ fn supports_effort(model: &str) -> bool {
 }
 
 fn to_messages(messages: &[LlmMessage]) -> Vec<Value> {
+    let total_tool_turns = messages
+        .iter()
+        .filter(|m| matches!(m, LlmMessage::User { tool_results, .. } if !tool_results.is_empty()))
+        .count();
+    let keep_full_from = total_tool_turns.saturating_sub(super::KEEP_FULL_TOOL_TURNS);
+    let mut tool_turn = 0usize;
     messages
         .iter()
         .map(|m| match m {
@@ -41,12 +47,20 @@ fn to_messages(messages: &[LlmMessage]) -> Vec<Value> {
                 for c in tool_calls {
                     content.push(json!({ "type": "tool_use", "id": c.id, "name": c.name, "input": c.input }));
                 }
+                if content.is_empty() {
+                    content.push(json!({ "type": "text", "text": "(trống)" }));
+                }
                 json!({ "role": "assistant", "content": content })
             }
             LlmMessage::User { text, tool_results } => {
+                let keep_full = tool_turn >= keep_full_from;
+                if !tool_results.is_empty() {
+                    tool_turn += 1;
+                }
                 let mut content = Vec::new();
                 for r in tool_results {
-                    let mut blocks = vec![json!({ "type": "text", "text": r.content })];
+                    let body = super::compact_tool_result(&r.content, keep_full);
+                    let mut blocks = vec![json!({ "type": "text", "text": if body.is_empty() { "(trống)" } else { &body } })];
                     for (mime, data) in &r.images {
                         blocks.push(json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": data } }));
                     }

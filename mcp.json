@@ -7,6 +7,33 @@
       "exclude": ["browser_run_code_unsafe", "browser_file_upload"],
       "hint": "Trình duyệt thật (github.com/microsoft/playwright-mcp). Mở bản xem thử, bấm / gõ như người dùng, browser_snapshot để đọc trang, browser_take_screenshot để XEM giao diện, browser_resize để thử cỡ điện thoại (375x812), browser_console_messages để xem lỗi JS."
     },
+    "desktop": {
+      "command": "C:\\Users\\Lwent\\AppData\\Roaming\\npm\\node_modules\\agent-desktop\\bin\\agent-desktop-win32-x64.exe",
+      "args": ["mcp"],
+      "roles": ["tester"],
+      "exclude": [
+        "desktop_skills_list",
+        "desktop_skills_get",
+        "desktop_skills_path",
+        "desktop_session_start",
+        "desktop_session_end",
+        "desktop_session_list",
+        "desktop_session_gc",
+        "desktop_cursor_overlay_enable",
+        "desktop_cursor_overlay_disable",
+        "desktop_trace_show",
+        "desktop_trace_export",
+        "desktop_sandbox_install",
+        "desktop_sandbox_create",
+        "desktop_sandbox_start",
+        "desktop_sandbox_stop",
+        "desktop_sandbox_status",
+        "desktop_sandbox_list",
+        "desktop_sandbox_rm",
+        "desktop_sandbox_exec"
+      ],
+      "hint": "Điều khiển ứng dụng desktop thật trên Windows (agent-desktop FULL quyền cho Tester): mở/đóng ứng dụng hoặc máy ảo (như MuMu 12), bấm/gõ/kéo/cuộn/chụp ảnh màn hình/đọc cây UI (desktop_launch, desktop_list_windows, desktop_focus_window, desktop_snapshot, desktop_screenshot, desktop_click, desktop_type, desktop_press, desktop_wait, desktop_batch...). Chủ tịch đã cấp toàn quyền mở giả lập/ứng dụng của dự án để test thật; không đụng tới cửa sổ cá nhân ngoài phạm vi dự án (AI Company, VS Code, Zalo)."
+    },
     "docs": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@4.5.1"],
@@ -14,6 +41,7 @@
       "hint": "Tài liệu MỚI NHẤT của thư viện / framework (github.com/upstash/context7). Dùng trước khi viết code với thư viện để không dùng API cũ."
     },
     "thinking": {
+      "enabled": false,
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-sequential-thinking@2.1.1"],
       "roles": ["ceo", "architect", "data_engineer", "security", "dev", "reviewer", "tester"],

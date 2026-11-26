@@ -32,6 +32,10 @@ pub struct Ctx {
     pub created_tickets: u32,
     /// Path of the last file written and how many times in a row (to stop endless polishing).
     pub last_write: Option<(String, u32)>,
+    /// Tracks exact `(path, start_line, end_line)` reads since the file was last written, to block amnesia read loops.
+    pub read_ranges: std::collections::HashMap<(String, usize, usize), u32>,
+    /// Tracks total read calls per file since it was last written.
+    pub read_files: std::collections::HashMap<String, u32>,
 }
 
 fn tool(name: &str, description: &str, schema: Value) -> ToolDef {
@@ -46,21 +50,51 @@ fn obj(props: Value, required: &[&str]) -> Value {
 pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
     let mut t = vec![
         tool("list_files", "Liệt kê tệp trong thư mục dự án (đệ quy).", obj(json!({ "dir": { "type": "string", "description": "Thư mục con, bỏ trống = gốc dự án" } }), &[])),
-        tool("read_file", "Đọc nội dung một tệp trong dự án.", obj(json!({ "path": { "type": "string" } }), &["path"])),
+        tool(
+            "read_file",
+            "Đọc nội dung một tệp trong dự án. Với tệp dài, truyền thêm start_line và end_line (từ dòng 1) để đọc đúng đoạn cần xem.",
+            obj(
+                json!({
+                    "path": { "type": "string" },
+                    "start_line": { "type": "integer", "description": "Dòng bắt đầu (từ 1, tùy chọn)" },
+                    "end_line": { "type": "integer", "description": "Dòng kết thúc bao gồm (tùy chọn, mặc định đọc tối đa 250 dòng từ start_line)" }
+                }),
+                &["path"],
+            ),
+        ),
     ];
     // Reviewers only read code, but at meetings everyone writes down their opinion and vote.
     if role != Role::Reviewer || phase.starts_with("meeting_") {
         t.push(tool(
+            "edit_file",
+            "Sửa một đoạn văn bản chính xác trong tệp đã có (ưu tiên dùng thay vì write_file khi sửa tệp dài). old_text phải khớp chính xác đoạn cần thay.",
+            obj(
+                json!({
+                    "path": { "type": "string" },
+                    "old_text": { "type": "string", "description": "Đoạn văn bản hiện có cần thay thế (ghi đủ ngữ cảnh để khớp duy nhất)" },
+                    "new_text": { "type": "string", "description": "Nội dung thay thế (để trống nếu muốn xóa đoạn đó)" },
+                    "replace_all": { "type": "boolean", "description": "Đặt true để thay mọi chỗ khớp; mặc định false (yêu cầu khớp duy nhất)" }
+                }),
+                &["path", "old_text", "new_text"],
+            ),
+        ));
+        t.push(tool(
             "write_file",
-            "Ghi (tạo mới hoặc ghi đè toàn bộ) một tệp trong dự án. Đường dẫn tương đối so với gốc dự án.",
+            "Ghi (tạo mới hoặc ghi đè toàn bộ) một tệp trong dự án. Đường dẫn tương đối so với gốc dự án. Khi sửa tệp đã có dài > 150 dòng hãy dùng edit_file.",
             obj(json!({ "path": { "type": "string" }, "content": { "type": "string" } }), &["path", "content"]),
         ));
     }
     if matches!(role, Role::Dev | Role::Tester | Role::Devops | Role::Architect | Role::Reviewer | Role::DataEngineer | Role::Security) {
         t.push(tool(
             "run_command",
-            "Chạy một lệnh shell (Windows cmd) trong thư mục dự án, tối đa 120 giây. Dùng để chạy test, build, kiểm tra cú pháp.",
-            obj(json!({ "command": { "type": "string" } }), &["command"]),
+            "Chạy một lệnh shell 1 DÒNG (Windows cmd, KHÔNG chứa ký tự xuống dòng) trong thư mục dự án, tối đa 120 giây. KHÔNG chạy trực tiếp máy chủ treo vô hạn (như 'python server.py' hay 'npm run dev'); nếu cần test server hãy tự bật/tắt nó bên trong script test. Nếu cần chạy script nhiều dòng, hãy ghi vào tệp .py bằng write_file rồi chạy 'python <tệp>'.",
+            obj(
+                json!({
+                    "command": { "type": "string" },
+                    "timeout_secs": { "type": "integer", "description": "Giới hạn thời gian chạy bằng giây (5..120, mặc định 120)" }
+                }),
+                &["command"],
+            ),
         ));
     }
     t.push(tool(
@@ -68,10 +102,10 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
         "Gửi tin nhắn cho đồng nghiệp theo vai trò (ceo, ba, dev, tester, ...). Họ sẽ đọc ở lượt việc tiếp theo.",
         obj(json!({ "to_role": { "type": "string" }, "text": { "type": "string" } }), &["to_role", "text"]),
     ));
-    if role == Role::Ceo || matches!(phase, "consult" | "clarify") {
+    if matches!(role, Role::Ceo | Role::Tester) || matches!(phase, "consult" | "clarify") {
         t.push(tool(
             "ask_chairman",
-            "Hỏi Chủ tịch / khách hàng (người dùng) và chờ câu trả lời. Dùng tiết kiệm.",
+            "Hỏi Chủ tịch / khách hàng (người dùng) và chờ câu trả lời. Tester dùng khi cần Chủ tịch cung cấp điều kiện test thật (tài khoản test, đăng nhập/2FA, xác nhận môi trường thật...).",
             obj(json!({ "question": { "type": "string" } }), &["question"]),
         ));
     }
@@ -261,19 +295,94 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             Ok(if files.is_empty() { "(thư mục trống)".into() } else { files.join("\n") })
         }
         "read_file" => {
-            let p = safe_path(&ctx.dir, s(input, "path"))?;
-            let bytes = tokio::fs::read(&p).await.map_err(|e| format!("Không đọc được {}: {e}", s(input, "path")))?;
+            let rel = s(input, "path");
+            let p = safe_path(&ctx.dir, rel)?;
+            let bytes = tokio::fs::read(&p).await.map_err(|e| format!("Không đọc được {rel}: {e}"))?;
             let text = String::from_utf8_lossy(&bytes);
-            const MAX: usize = 60_000;
-            Ok(if text.len() > MAX {
-                let mut cut = MAX;
-                while !text.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                format!("{}\n…(cắt bớt, tệp dài {} byte)", &text[..cut], text.len())
+            let start_req = input.get("start_line").and_then(|v| v.as_u64()).map(|n| n.max(1) as usize);
+            let end_req = input.get("end_line").and_then(|v| v.as_u64()).map(|n| n.max(1) as usize);
+            const MAX_BYTES: usize = 60_000;
+            const LARGE_LINES: usize = 600;
+            const DEFAULT_SLICE: usize = 500;
+
+            let lines: Vec<&str> = text.lines().collect();
+            let total = lines.len();
+            let norm_rel = rel.replace('\\', "/");
+            let range_key = if start_req.is_some() || end_req.is_some() || total > LARGE_LINES || text.len() > 50_000 {
+                let s_line = start_req.unwrap_or(1);
+                let e_line = end_req.unwrap_or_else(|| (s_line + DEFAULT_SLICE - 1).min(total)).min(total);
+                (norm_rel.clone(), s_line, e_line)
             } else {
-                text.into_owned()
-            })
+                (norm_rel.clone(), 1, total)
+            };
+            let same_hits = ctx.read_ranges.entry(range_key).or_insert(0);
+            *same_hits += 1;
+            let file_hits = ctx.read_files.entry(norm_rel.clone()).or_insert(0);
+            *file_hits += 1;
+            if *same_hits >= 3 {
+                return Err(format!(
+                    "BẠN ĐÃ ĐỌC ĐÚNG ĐOẠN NÀY CỦA {rel} TRƯỚC ĐÓ VÀ TỆP CHƯA HỀ THAY ĐỔI (lần đọc trùng thứ {}). KHÔNG đọc lặp lại nữa — hãy dùng thông tin đã nắm để sửa mã nguồn, chạy test hoặc gọi ngay công cụ kết thúc (finish / approve_code / pass_ticket / fail_ticket).",
+                    *same_hits
+                ));
+            }
+            if *file_hits > 10 {
+                return Err(format!(
+                    "Bạn đã đọc {rel} quá 10 lần liên tiếp mà chưa sửa tệp. Hãy dừng đọc lặp và hành động hoặc gọi công cụ kết thúc ngay."
+                ));
+            }
+            if start_req.is_some() || end_req.is_some() || total > LARGE_LINES || text.len() > 50_000 {
+                let s_line = start_req.unwrap_or(1);
+                if total == 0 {
+                    return Ok(format!("Tệp {rel} (0 dòng, trống)."));
+                }
+                if s_line > total {
+                    return Err(format!("start_line ({s_line}) vượt quá tổng số dòng của {rel} ({total} dòng)."));
+                }
+                let e_line = end_req.unwrap_or_else(|| (s_line + DEFAULT_SLICE - 1).min(total)).min(total);
+                if e_line < s_line {
+                    return Err(format!("end_line ({e_line}) phải lớn hơn hoặc bằng start_line ({s_line})."));
+                }
+                let mut out = format!("Tệp {rel} (tổng {total} dòng, đang xem dòng {s_line}..{e_line}):\n");
+                for idx in s_line..=e_line {
+                    let row = format!("{idx}: {}\n", lines[idx - 1]);
+                    if out.len() + row.len() > MAX_BYTES {
+                        out.push_str(&format!("…(đạt giới hạn 60KB tại dòng {idx}/{total}; gọi read_file với start_line={} để đọc tiếp)\n", idx));
+                        return Ok(out);
+                    }
+                    out.push_str(&row);
+                }
+                if e_line < total {
+                    out.push_str(&format!(
+                        "…(còn tiếp tới dòng {total}; dùng read_file với start_line={} để đọc tiếp, và ưu tiên edit_file để sửa từng đoạn)",
+                        e_line + 1
+                    ));
+                }
+                Ok(out)
+            } else {
+                Ok(text.into_owned())
+            }
+        }
+        "edit_file" => {
+            let rel = s(input, "path");
+            if !may_write(me.role, rel) {
+                return Err(format!("Vai trò của bạn chỉ được sửa trong docs/ (hoặc tests/ với Tester). Không sửa được {rel}."));
+            }
+            let old_text = s(input, "old_text");
+            let new_text = s(input, "new_text");
+            if old_text.is_empty() {
+                return Err("old_text không được trống. Hãy cung cấp đoạn văn bản cần thay thế.".into());
+            }
+            let replace_all = input.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let p = safe_path(&ctx.dir, rel)?;
+            let orig = tokio::fs::read_to_string(&p).await.map_err(|e| format!("Không đọc được {rel}: {e}"))?;
+            let (updated, count) = apply_edit(&orig, old_text, new_text, replace_all)?;
+            tokio::fs::write(&p, &updated).await.map_err(|e| format!("Không ghi được {rel}: {e}"))?;
+            let norm_rel = rel.replace('\\', "/");
+            ctx.read_files.remove(&norm_rel);
+            ctx.read_ranges.retain(|(f, _, _), _| f != &norm_rel);
+            store.kpi(&me.id, |k| k.files_written += 1);
+            let total_lines = updated.lines().count();
+            Ok(format!("Đã sửa {rel} ({count} vị trí, tổng {total_lines} dòng, {} byte)", updated.len()))
         }
         "write_file" => {
             let rel = s(input, "path");
@@ -286,6 +395,9 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             }
             let content = s(input, "content");
             tokio::fs::write(&p, content).await.map_err(|e| format!("Không ghi được {rel}: {e}"))?;
+            let norm_rel = rel.replace('\\', "/");
+            ctx.read_files.remove(&norm_rel);
+            ctx.read_ranges.retain(|(f, _, _), _| f != &norm_rel);
             store.kpi(&me.id, |k| k.files_written += 1);
             let n = match &ctx.last_write {
                 Some((last, n)) if last == rel => n + 1,
@@ -297,7 +409,10 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             }
             Ok(format!("Đã ghi {rel} ({} byte)", content.len()))
         }
-        "run_command" => run_command(ctx, s(input, "command")).await,
+        "run_command" => {
+            let timeout = input.get("timeout_secs").and_then(|v| v.as_u64()).map(|s| s.clamp(5, 120)).unwrap_or(120);
+            run_command(ctx, s(input, "command"), timeout).await
+        }
         "message_colleague" => {
             let role: Role = serde_json::from_value(json!(s(input, "to_role").to_lowercase()))
                 .map_err(|_| "to_role không hợp lệ (ceo, pm, ba, architect, data_engineer, security, dev, reviewer, tester, devops, designer, secretary)".to_string())?;
@@ -406,7 +521,11 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             Ok(format!("Đã mở ticket lỗi {key}"))
         }
         "finish" => {
-            ctx.outcome = Some(Outcome::Finish(s(input, "summary").into()));
+            let summary = s(input, "summary").trim();
+            if summary.is_empty() {
+                return Err("Cần ghi tóm tắt ngắn về những gì đã làm khi gọi finish.".into());
+            }
+            ctx.outcome = Some(Outcome::Finish(summary.into()));
             Ok("OK".into())
         }
         "pass_ticket" => {
@@ -649,6 +768,8 @@ fn is_dangerous(cmd: &str) -> bool {
         "rm -rf /", "rm -rf ~", "del /s", "rd /s", "rmdir /s", "remove-item -recurse", "cipher /w", "takeown",
         "icacls", "net user", "schtasks", "vssadmin", "powershell -enc", "-encodedcommand", "invoke-webrequest",
         "iwr ", "curl ", "wget ", "c:\\windows", "%userprofile%", "%appdata%", "..\\", "../",
+        "git reset --hard", "git clean -f", "git clean -df", "git clean -fd", "git checkout --", "git checkout -f",
+        "git restore ", "git push",
     ]
     .iter()
     .any(|p| c.contains(p))
@@ -669,13 +790,50 @@ fn is_safe(cmd: &str) -> bool {
     .any(|p| c == p.trim() || c.starts_with(p))
 }
 
-async fn run_command(ctx: &mut Ctx, command: &str) -> Result<String, String> {
+async fn kill_process_tree(child: &mut tokio::process::Child) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let mut tk = tokio::process::Command::new("taskkill");
+        tk.args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000);
+        let _ = tokio::time::timeout(Duration::from_secs(5), tk.status()).await;
+    }
+    let _ = child.kill().await;
+}
+
+async fn drain_bounded<R: tokio::io::AsyncRead + Unpin>(mut reader: R, buf: std::sync::Arc<tokio::sync::Mutex<Vec<u8>>>, max_bytes: usize) {
+    let mut chunk = [0u8; 4096];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let mut g = buf.lock().await;
+                g.extend_from_slice(&chunk[..n]);
+                if g.len() > max_bytes {
+                    let excess = g.len() - max_bytes;
+                    g.drain(..excess);
+                }
+            }
+        }
+    }
+}
+
+async fn run_command(ctx: &mut Ctx, command: &str, timeout_secs: u64) -> Result<String, String> {
     let command = command.trim();
     if command.is_empty() {
         return Err("Lệnh trống".into());
     }
     if is_dangerous(command) {
-        return Err("Lệnh bị chặn vì có thể gây hại hoặc ra ngoài thư mục dự án.".into());
+        return Err("Lệnh bị chặn vì có thể gây hại, xóa mã nguồn chưa lưu hoặc ra ngoài thư mục dự án.".into());
+    }
+    if cfg!(windows) && (command.contains('\n') || command.contains('\r')) {
+        return Err("Lệnh run_command trên Windows (cmd.exe) KHÔNG hỗ trợ xuống dòng (nhiều dòng). Hãy viết lệnh trên 1 dòng duy nhất (ngăn cách bằng &&), hoặc ghi script vào tệp .py bằng write_file rồi chạy 'python <tệp>'.".into());
+    }
+    if cfg!(windows) && command.len() > 7500 {
+        return Err("Lệnh quá dài (> 7500 ký tự, vượt giới hạn cmd.exe của Windows). Hãy ghi script ngắn vào tệp test/tạm rồi chạy thay vì truyền 1 dòng dài.".into());
     }
     let store = ctx.store.clone();
     let auto = store.with(|s| s.settings.auto_approve_commands);
@@ -724,23 +882,59 @@ async fn run_command(ctx: &mut Ctx, command: &str) -> Result<String, String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let mut child = cmd.spawn().map_err(|e| format!("Không chạy được lệnh: {e}"))?;
-    let mut so = child.stdout.take().unwrap();
-    let mut se = child.stderr.take().unwrap();
-    let read = async {
-        let mut a = Vec::new();
-        let mut b = Vec::new();
-        let _ = tokio::join!(so.read_to_end(&mut a), se.read_to_end(&mut b));
-        let status = child.wait().await;
-        (a, b, status)
+    let so = child.stdout.take().unwrap();
+    let se = child.stderr.take().unwrap();
+    let out_buf = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
+    let err_buf = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
+    let out_task = tokio::spawn(drain_bounded(so, out_buf.clone(), 64_000));
+    let err_task = tokio::spawn(drain_bounded(se, err_buf.clone(), 64_000));
+
+    let timed_out = tokio::select! {
+        r = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()) => {
+            match r {
+                Ok(status) => Ok(Some(status)),
+                Err(_) => {
+                    kill_process_tree(&mut child).await;
+                    Ok(None)
+                }
+            }
+        }
+        _ = ctx.cancel.cancelled() => {
+            kill_process_tree(&mut child).await;
+            Err("aborted".to_string())
+        }
     };
-    let (out, err, status) = tokio::select! {
-        r = tokio::time::timeout(Duration::from_secs(120), read) => r.map_err(|_| "Lệnh chạy quá 120 giây, đã dừng.".to_string())?,
-        _ = ctx.cancel.cancelled() => return Err("aborted".into()),
+    let status_opt = match timed_out {
+        Ok(s) => s,
+        Err(e) => {
+            out_task.abort();
+            err_task.abort();
+            return Err(e);
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let _ = out_task.await;
+        let _ = err_task.await;
+    })
+    .await;
+    let out = out_buf.lock().await.clone();
+    let err = err_buf.lock().await.clone();
+    let o = String::from_utf8_lossy(&out);
+    let e = String::from_utf8_lossy(&err);
+    let Some(status) = status_opt else {
+        let mut msg = format!(
+            "Lệnh chạy quá {timeout_secs} giây, đã dừng toàn bộ tiến trình con. (Không chạy trực tiếp server treo vô hạn trong run_command — nếu cần server để test hãy bật/tắt nó bằng subprocess bên trong script test.)\n"
+        );
+        if !o.trim().is_empty() {
+            msg.push_str(&format!("--- stdout trước khi dừng ---\n{}\n", tail(&o, 4000)));
+        }
+        if !e.trim().is_empty() {
+            msg.push_str(&format!("--- stderr trước khi dừng ---\n{}\n", tail(&e, 3000)));
+        }
+        return Err(msg);
     };
     let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
     let mut text = format!("exit code: {code}\n");
-    let o = String::from_utf8_lossy(&out);
-    let e = String::from_utf8_lossy(&err);
     if !o.trim().is_empty() {
         text.push_str(&format!("--- stdout ---\n{}\n", tail(&o, 6000)));
     }
@@ -752,6 +946,35 @@ async fn run_command(ctx: &mut Ctx, command: &str) -> Result<String, String> {
     } else {
         Err(text)
     }
+}
+
+/// Replaces `old_text` with `new_text`, preserving CRLF line endings when files on Windows use CRLF.
+fn apply_edit(orig: &str, old_text: &str, new_text: &str, replace_all: bool) -> Result<(String, usize), String> {
+    let direct = orig.matches(old_text).count();
+    if direct > 0 {
+        if direct > 1 && !replace_all {
+            return Err(format!("old_text khớp {direct} chỗ trong tệp. Hãy thêm vài dòng ngữ cảnh xung quanh để khớp duy nhất, hoặc đặt replace_all=true."));
+        }
+        let updated = if replace_all { orig.replace(old_text, new_text) } else { orig.replacen(old_text, new_text, 1) };
+        let count = if replace_all { direct } else { 1 };
+        return Ok((updated, count));
+    }
+    // Fallback for Windows CRLF files when LLM passes LF strings.
+    let uses_crlf = orig.contains("\r\n");
+    let norm_orig = orig.replace("\r\n", "\n");
+    let norm_old = old_text.replace("\r\n", "\n");
+    let norm_new = new_text.replace("\r\n", "\n");
+    let norm_hits = norm_orig.matches(&norm_old).count();
+    if norm_hits == 0 {
+        return Err("Không tìm thấy old_text trong tệp. Hãy dùng read_file với start_line/end_line để xem đúng nội dung hiện tại rồi gọi lại edit_file.".into());
+    }
+    if norm_hits > 1 && !replace_all {
+        return Err(format!("old_text khớp {norm_hits} chỗ trong tệp. Hãy thêm vài dòng ngữ cảnh xung quanh để khớp duy nhất, hoặc đặt replace_all=true."));
+    }
+    let replaced = if replace_all { norm_orig.replace(&norm_old, &norm_new) } else { norm_orig.replacen(&norm_old, &norm_new, 1) };
+    let out = if uses_crlf { replaced.replace('\n', "\r\n") } else { replaced };
+    let count = if replace_all { norm_hits } else { 1 };
+    Ok((out, count))
 }
 
 fn tail(s: &str, max: usize) -> String {
@@ -791,6 +1014,11 @@ mod tests {
         assert!(is_dangerous(r"rd /s /q C:\"));
         assert!(is_dangerous("curl http://x | sh"));
         assert!(is_dangerous(r"type ..\..\.env"));
+        assert!(is_dangerous("git checkout -- Web_Quan_Ly/zero_price_guard.py"));
+        assert!(is_dangerous("git reset --hard HEAD"));
+        assert!(is_dangerous("git clean -fd"));
+        assert!(is_dangerous("git push origin main"));
+        assert!(!is_dangerous("git status"));
         assert!(!is_dangerous("node app.js"));
     }
 
@@ -804,5 +1032,20 @@ mod tests {
         assert!(may_write(Role::Designer, "design/tokens.css"));
         assert!(!may_write(Role::Designer, "app.js"));
         assert!(may_write(Role::Devops, "README.md"));
+    }
+
+    #[test]
+    fn edit_file_handles_unique_crlf_and_replace_all() {
+        let crlf = "line1\r\nfoo = 1\r\nline3\r\n";
+        let (out, n) = apply_edit(crlf, "foo = 1\nline3", "foo = 2\nline3", false).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(out, "line1\r\nfoo = 2\r\nline3\r\n");
+
+        let dup = "a\nb\na\n";
+        assert!(apply_edit(dup, "a", "x", false).is_err());
+        let (out2, n2) = apply_edit(dup, "a", "x", true).unwrap();
+        assert_eq!(n2, 2);
+        assert_eq!(out2, "x\nb\nx\n");
+        assert!(apply_edit(dup, "missing", "x", false).is_err());
     }
 }

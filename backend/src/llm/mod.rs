@@ -36,6 +36,25 @@ pub struct ToolResult {
 /// Only the most recent screenshots are sent back to the model (they are large).
 pub const KEEP_IMAGES: usize = 2;
 
+/// Number of most recent tool-result turns kept in full; older oversized outputs are compacted to prevent runaway bloat
+/// while giving Devs enough working memory to read multiple large files before editing.
+pub const KEEP_FULL_TOOL_TURNS: usize = 28;
+const COMPACT_TOOL_THRESHOLD: usize = 6000;
+const COMPACT_TOOL_HEAD: usize = 2000;
+
+/// Compacts old, oversized tool results while keeping recent turns intact.
+pub fn compact_tool_result(content: &str, keep_full: bool) -> String {
+    if keep_full {
+        return content.to_string();
+    }
+    let count = content.chars().count();
+    if count <= COMPACT_TOOL_THRESHOLD {
+        return content.to_string();
+    }
+    let head: String = content.chars().take(COMPACT_TOOL_HEAD).collect();
+    format!("{head}\n…[đã rút gọn kết quả tool cũ ({count} ký tự) để tiết kiệm ngữ cảnh; đọc lại tệp nếu cần]")
+}
+
 #[derive(Clone, Debug)]
 pub enum LlmMessage {
     User {
@@ -165,5 +184,19 @@ mod tests {
         assert_eq!(super::reset_after("x (reset after 1m 19s)\"}}").unwrap().as_secs(), 81);
         assert_eq!(super::reset_after("reset after 45s").unwrap().as_secs(), 47);
         assert!(super::reset_after("no hint").is_none());
+    }
+
+    #[test]
+    fn compacts_only_old_large_tool_results() {
+        let big = "a".repeat(8000);
+        assert_eq!(super::compact_tool_result(&big, true), big);
+        assert_eq!(super::compact_tool_result("ngắn", false), "ngắn");
+        let compacted = super::compact_tool_result(&big, false);
+        assert!(compacted.contains("đã rút gọn kết quả tool cũ (8000 ký tự)"));
+        assert!(compacted.chars().count() < 2300);
+        // UTF-8 multibyte safety
+        let vn = "tiếng Việt ".repeat(700);
+        let c_vn = super::compact_tool_result(&vn, false);
+        assert!(c_vn.contains("đã rút gọn"));
     }
 }

@@ -48,3 +48,31 @@
   color: var(--amber);
   font-size: 20px;
 }
+.skill-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: #1c2036;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel-in);
+}
+.skill-box.drag-over {
+  border-color: var(--lime);
+  background: #202a3d;
+}
+.skill-title {
+  color: var(--amber);
+  font-size: 19px;
+}
+.skill-preset {
+  width: auto;
+  max-width: 150px;
+  padding: 2px 6px;
+  font-size: 17px;
+}
+.skill-textarea {
+  min-height: 105px;
+  font: 17px/1.2 var(--pixel-font);
+  color: var(--text);
+}

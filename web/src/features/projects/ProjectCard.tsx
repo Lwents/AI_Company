@@ -6,6 +6,12 @@ import { PHASES, PROJECT_STATUS } from "@/shared/labels";
 import { usd } from "@/shared/format";
 import type { Project } from "@/api/types";
 
+/** Last part of a path / URL (the full value is shown on hover). */
+function shortSource(src: string): string {
+  const parts = src.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.length > 1 ? `…/${parts[parts.length - 1]}` : src;
+}
+
 export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: boolean; onSelect: () => void }) {
   const { state } = useStore();
   const [feedback, setFeedback] = useState("");
@@ -69,8 +75,18 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
 
       {selected && (
         <div className="stack" onClick={(e) => e.stopPropagation()}>
-          <div className="row between">
-            <span className="small muted">{p.existing ? `Mã nguồn của khách: ${p.source}` : p.tech ? `Công nghệ: ${p.tech}` : "Công nghệ: PM tư vấn với bạn"}</span>
+          <div className="src-row">
+            <span className="src-info small muted" title={p.existing ? p.source : undefined}>
+              {p.existing ? (
+                <>
+                  {p.dir ? "Thư mục" : "Mã nguồn"}: <b>{shortSource(p.source ?? "")}</b>
+                </>
+              ) : p.tech ? (
+                `Công nghệ: ${p.tech}`
+              ) : (
+                "Công nghệ: PM tư vấn với bạn"
+              )}
+            </span>
             <a className="btn" href={`/api/projects/${p.id}/download`} download>
               ⬇ Tải mã nguồn (.zip)
             </a>

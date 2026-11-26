@@ -9,6 +9,7 @@ import { KpiPanel } from "@/features/kpi/KpiPanel";
 import { ProductPanel } from "@/features/product/ProductPanel";
 import { ApprovalsPanel } from "@/features/approvals/ApprovalsPanel";
 import { CostsPanel } from "@/features/costs/CostsPanel";
+import { ResourcesPanel } from "@/features/resources/ResourcesPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 
 export interface TabDef {
@@ -35,5 +36,6 @@ export const TABS: TabDef[] = [
   { id: "product", label: "Sản phẩm", panel: ProductPanel },
   { id: "approvals", label: "Duyệt", panel: ApprovalsPanel, badge: (s) => s.approvals.filter((a) => a.status === "pending").length },
   { id: "costs", label: "Chi phí", panel: CostsPanel },
+  { id: "resources", label: "Tài nguyên", panel: ResourcesPanel },
   { id: "settings", label: "Cài đặt", panel: SettingsPanel },
 ];

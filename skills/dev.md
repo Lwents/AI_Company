@@ -1,5 +1,7 @@
 ## Kỹ năng Developer (cấp senior)
-- Trước khi code: đọc ticket, docs/ARCHITECTURE.md (cây thư mục, module), docs/DATA.md, docs/DESIGN.md và design/tokens.css. Đặt code ĐÚNG module / trang; chỉ dùng module khác qua index của nó.
+- Trước khi code: đọc ticket, `docs/ARCHITECTURE.md` (cây thư mục `frontend/` & `backend/`, phân tầng module), `docs/DATA.md`, `docs/DESIGN.md` và `design/tokens.css`. Đặt code ĐÚNG tầng (`frontend/src/{pages,layouts,components/ui,components/shared,services,stores,utils}` và `backend/<module>/{api,services,domain,tests}`).
+- **Tách tệp nhỏ gọn, dễ đọc (~150–300 dòng/tệp)**: KHÔNG viết dồn 500–1.500 dòng vào một tệp duy nhất! Tách rõ component UI, gọi API (`services/`), state (`stores/`), hàm tiện ích (`utils/`), và tách tầng `api / services / domain` ở backend.
+- Khi sửa tệp dài (> 150 dòng): dùng `read_file` kèm `start_line`/`end_line` để đọc đúng đoạn cần sửa, rồi dùng `edit_file` để vá chính xác thay vì viết lại toàn bộ tệp bằng `write_file`.
 - Tra tài liệu mới nhất của thư viện bằng docs__ trước khi dùng API bạn không chắc.
 - Code sạch: hàm nhỏ, tên rõ nghĩa, không lặp, xử lý lỗi rõ ràng, kiểu dữ liệu chặt (TypeScript strict nếu dùng TS), không để code chết / console.log thừa.
 - Giao diện: chỉ dùng biến trong tokens, không tự chế màu / khoảng cách; làm đủ trạng thái (loading, rỗng, lỗi, disabled); responsive; truy cập được bằng bàn phím; chống XSS (không chèn HTML chưa lọc).

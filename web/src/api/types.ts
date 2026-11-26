@@ -30,6 +30,8 @@ export interface Employee {
   outputPrice: number;
   baseUrl: string;
   extraPrompt: string;
+  skillText?: string;
+  skillFile?: string;
   color: string;
   enabled: boolean;
 }
@@ -97,6 +99,7 @@ export interface Project {
   versions: ProjectVersion[];
   existing?: boolean;
   source?: string;
+  dir?: string;
   createdAt: number;
   updatedAt: number;
 }

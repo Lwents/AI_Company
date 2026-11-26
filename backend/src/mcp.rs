@@ -31,6 +31,9 @@ pub struct ServerConfig {
     /// Tools of this server never offered to employees.
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Optional allowlist: when non-empty, ONLY these tool names are exposed to employees.
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -133,11 +136,17 @@ fn sanitize(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }
 
-/// Strips JSON-Schema keywords some providers reject.
+/// Strips JSON-Schema keywords some providers (e.g. Gemini) reject with 400 INVALID_ARGUMENT.
 fn clean_schema(mut v: Value) -> Value {
     if let Some(o) = v.as_object_mut() {
-        o.remove("$schema");
-        o.remove("additionalProperties");
+        for k in ["$schema", "additionalProperties", "exclusiveMinimum", "exclusiveMaximum", "const", "propertyNames", "$defs", "definitions"] {
+            o.remove(k);
+        }
+        if let Some(Value::Array(arr)) = o.get("type").cloned() {
+            if let Some(first) = arr.iter().filter_map(Value::as_str).find(|t| *t != "null") {
+                o.insert("type".into(), Value::String(first.to_string()));
+            }
+        }
         for (_, child) in o.iter_mut() {
             *child = clean_schema(child.take());
         }
@@ -149,40 +158,86 @@ fn clean_schema(mut v: Value) -> Value {
     v
 }
 
+/// Light / coordination phases that never need external MCP servers (saves spawning npx/browser per turn).
+fn skip_mcp_for_phase(phase: &str) -> bool {
+    matches!(
+        phase,
+        "meeting_opinion" | "meeting_ballot" | "meeting_vote" | "minutes" | "standup" | "planning" | "clarify" | "retro"
+    )
+}
+
+/// Phases where Playwright browser automation is actually useful.
+fn browser_phase(phase: &str) -> bool {
+    matches!(
+        phase,
+        "design" | "implement" | "review" | "test" | "design_review" | "final_qa" | "security" | "documentation" | "release"
+    )
+}
+
+/// Phases where native Windows desktop GUI automation (`desktop` MCP) is offered (QA / visual testing).
+fn desktop_phase(phase: &str) -> bool {
+    matches!(phase, "test" | "final_qa" | "design_review" | "release")
+}
+
 impl Session {
-    /// Starts every enabled server meant for `role`. Servers that fail to start are skipped.
-    pub async fn start(root: &Path, dir: &Path, role: Role) -> Session {
+    /// Starts every enabled server meant for `role` and `phase` in parallel. Servers that fail to start are skipped.
+    pub async fn start(root: &Path, dir: &Path, role: Role, phase: &str) -> Session {
         let mut s = Session { conns: HashMap::new(), tools: vec![], hints: vec![] };
+        if skip_mcp_for_phase(phase) {
+            return s;
+        }
         let rk = role_key(role);
         let mut servers: Vec<(String, ServerConfig)> = load_config(root)
             .into_iter()
-            .filter(|(_, c)| c.enabled && (c.roles.is_empty() || c.roles.iter().any(|r| r == &rk)))
+            .filter(|(name, c)| {
+                c.enabled
+                    && (c.roles.is_empty() || c.roles.iter().any(|r| r == &rk))
+                    && (name != "browser" || browser_phase(phase))
+                    && (name != "desktop" || desktop_phase(phase))
+            })
             .collect();
         servers.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut set = tokio::task::JoinSet::new();
         for (name, cfg) in servers {
-            match start_server(root, dir, &cfg).await {
-                Ok((conn, tools)) => {
-                    for t in tools {
-                        let tool = t.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
-                        if tool.is_empty() || cfg.exclude.iter().any(|x| x == &tool) {
-                            continue;
-                        }
-                        let full: String = format!("{}__{}", sanitize(&name), sanitize(&tool)).chars().take(64).collect();
-                        s.tools.push(McpTool {
-                            name: full,
-                            server: name.clone(),
-                            tool,
-                            description: t.get("description").and_then(Value::as_str).unwrap_or_default().chars().take(1000).collect(),
-                            schema: clean_schema(t.get("inputSchema").cloned().unwrap_or(json!({ "type": "object", "properties": {} }))),
-                        });
-                    }
-                    if !cfg.hint.is_empty() {
-                        s.hints.push(format!("- {name}: {}", cfg.hint));
-                    }
-                    s.conns.insert(name, conn);
+            let root = root.to_path_buf();
+            let dir = dir.to_path_buf();
+            set.spawn(async move {
+                let res = start_server(&root, &dir, &cfg).await;
+                (name, cfg, res)
+            });
+        }
+        let mut started = vec![];
+        while let Some(joined) = set.join_next().await {
+            if let Ok((name, cfg, res)) = joined {
+                match res {
+                    Ok((conn, tools)) => started.push((name, cfg, conn, tools)),
+                    Err(e) => eprintln!("Không khởi động được MCP {name}: {e}"),
                 }
-                Err(e) => eprintln!("Không khởi động được MCP {name}: {e}"),
             }
+        }
+        started.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, cfg, conn, tools) in started {
+            for t in tools {
+                let tool = t.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                if tool.is_empty() || cfg.exclude.iter().any(|x| x == &tool) {
+                    continue;
+                }
+                if !cfg.include.is_empty() && !cfg.include.iter().any(|x| x == &tool) {
+                    continue;
+                }
+                let full: String = format!("{}__{}", sanitize(&name), sanitize(&tool)).chars().take(64).collect();
+                s.tools.push(McpTool {
+                    name: full,
+                    server: name.clone(),
+                    tool,
+                    description: t.get("description").and_then(Value::as_str).unwrap_or_default().chars().take(1000).collect(),
+                    schema: clean_schema(t.get("inputSchema").cloned().unwrap_or(json!({ "type": "object", "properties": {} }))),
+                });
+            }
+            if !cfg.hint.is_empty() {
+                s.hints.push(format!("- {name}: {}", cfg.hint));
+            }
+            s.conns.insert(name, conn);
         }
         s
     }
@@ -249,8 +304,9 @@ impl Drop for Session {
 }
 
 async fn start_server(root: &Path, dir: &Path, cfg: &ServerConfig) -> Result<(Conn, Vec<Value>), String> {
-    // On Windows `npx` is a .cmd script, so go through cmd.
-    let mut cmd = if cfg!(windows) {
+    // On Windows `.cmd`/`.bat`/PATH shims like `npx` go through cmd; direct `.exe` binaries run directly so kill_on_drop works cleanly.
+    let direct_exe = cfg!(windows) && cfg.command.to_lowercase().ends_with(".exe");
+    let mut cmd = if cfg!(windows) && !direct_exe {
         let mut c = tokio::process::Command::new("cmd");
         c.arg("/C").arg(&cfg.command).args(&cfg.args);
         c
@@ -289,13 +345,37 @@ async fn start_server(root: &Path, dir: &Path, cfg: &ServerConfig) -> Result<(Co
 mod tests {
     use super::*;
 
+    #[test]
+    fn cleans_gemini_incompatible_schema_and_skips_light_phases() {
+        let s = clean_schema(json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "x": { "type": ["string", "null"], "const": "a", "exclusiveMinimum": 0 }
+            }
+        }));
+        assert!(s.get("$schema").is_none());
+        assert!(s.get("additionalProperties").is_none());
+        assert_eq!(s["properties"]["x"]["type"], "string");
+        assert!(s["properties"]["x"].get("const").is_none());
+        assert!(skip_mcp_for_phase("meeting_opinion"));
+        assert!(skip_mcp_for_phase("meeting_vote"));
+        assert!(!skip_mcp_for_phase("implement"));
+        assert!(!browser_phase("architecture"));
+        assert!(browser_phase("test"));
+        assert!(desktop_phase("test"));
+        assert!(desktop_phase("final_qa"));
+        assert!(!desktop_phase("implement"));
+    }
+
     /// Needs network + Edge: `cargo test -- --ignored mcp_live`.
     #[tokio::test]
     #[ignore]
     async fn mcp_live() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
         let dir = std::env::temp_dir();
-        let mut s = Session::start(&root, &dir, Role::Tester).await;
+        let mut s = Session::start(&root, &dir, Role::Tester, "test").await;
         let mut names: Vec<_> = s.tools.iter().map(|t| t.name.clone()).collect();
         names.sort();
         println!("{} tools: {:?}", names.len(), names);

@@ -8,10 +8,18 @@ use crate::agent::{self, Job};
 use crate::store::{now_ms, S};
 use crate::tools::Outcome;
 use crate::types::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+/// True when the project directory has a static web entry served by `/preview/<pid>/`.
+pub(crate) fn has_preview(dir: &Path) -> bool {
+    dir.join("index.html").is_file()
+        || dir.join("dist").join("index.html").is_file()
+        || dir.join("frontend").join("dist").join("index.html").is_file()
+        || dir.join("frontend").join("index.html").is_file()
+        || dir.join("design").join("mockup.html").is_file()
+}
 
 const ABORTED: &str = "aborted";
 const MAX_RELEASE_ROUNDS: u32 = 3;
@@ -739,6 +747,11 @@ async fn approve_design(store: &S, p: &Project, designer: &Employee, cancel: &Ca
         store.set_runtime(&designer.id, EmpStatus::Idle, "", None, None);
         let ans = a.answer.unwrap_or_default();
         let t = ans.trim().to_lowercase();
+        if a.status == ApprovalStatus::Denied && t.is_empty() {
+            // Chairman dismissed / skipped without feedback (or server restarted): keep current design instead of wasting redesign rounds.
+            store.post_message(Some(&p.id), &designer.id, "all", "Chủ tịch bỏ qua duyệt thiết kế (không có góp ý sửa), đội tiếp tục với bản hiện tại.", "chat");
+            return Ok(());
+        }
         let ok = a.status == ApprovalStatus::Approved
             || t.is_empty() && a.status == ApprovalStatus::Answered
             || ["ok", "oke", "okay", "đồng ý", "duyệt", "được", "đẹp", "chốt", "yes"].iter().any(|w| t == *w || t.starts_with(&format!("{w} ")) || t.starts_with(&format!("{w},")) || t.starts_with(&format!("{w}.")));
@@ -788,134 +801,130 @@ async fn phase_data(store: &S, p: &Project, lead: &Employee, cancel: &Cancellati
     Ok(())
 }
 
-fn is_open(s: TicketStatus) -> bool {
-    matches!(s, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Review | TicketStatus::Testing)
-}
-
 async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
     let devs = store.staff(Role::Dev);
     if devs.is_empty() {
         return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
     }
-    // Work interrupted by a pause starts over from To Do.
+    // Resume cleanly: only tickets interrupted during Dev coding restart as Todo;
+    // tickets already in Review or Testing keep their stage so Dev/Reviewer work is not repeated.
     for t in store.tickets_of(&p.id) {
-        if matches!(t.status, TicketStatus::InProgress | TicketStatus::Review | TicketStatus::Testing) {
+        if t.status == TicketStatus::InProgress {
             store.update_ticket(&t.id, |t| t.status = TicketStatus::Todo);
         }
     }
-    let todo = store.tickets_of(&p.id).iter().filter(|t| t.status == TicketStatus::Todo).count();
+    let todo = store
+        .tickets_of(&p.id)
+        .iter()
+        .filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::Review | TicketStatus::Testing))
+        .count();
 
-    // Daily standup led by the PM.
-    if let Some(pm) = first(store, &[Role::Pm]) {
-        let mut team: Vec<String> = vec![pm.id.clone()];
-        for r in [Role::Dev, Role::Reviewer, Role::Tester, Role::Designer] {
-            team.extend(store.staff(r).into_iter().map(|e| e.id));
-        }
-        meeting(store, &p.id, team.clone(), "Họp daily", true);
-        let task = format!(
-            "Họp daily đầu đợt làm việc. Các ticket:\n{}\nNhắn từng Dev (message_colleague, to_role = dev) việc cần làm trước và lưu ý quan trọng. Ngắn gọn. Xong gọi finish với tóm tắt cuộc họp.",
-            ticket_list(store, &p.id)
-        );
-        let r = agent::run(store, Job { employee_id: pm.id.clone(), project_id: p.id.clone(), phase: "standup", ticket_id: None, case_id: None, task }, cancel).await;
-        meeting(store, &p.id, team, "", false);
-        let r = r?;
-        store.post_message(Some(&p.id), &pm.id, "all", format!("Daily: {}", summary_of(&r.outcome)), "chat");
-    } else if let Some(from) = first(store, &[Role::Architect, Role::Designer, Role::Ba, Role::Ceo]) {
-        for d in &devs {
-            handoff(store, &p.id, &from.id, &d.id, format!("Có {todo} ticket cần làm trên bảng Kanban."));
+    // Daily standup led by the PM (only once per project build phase, skipped on pause/resume).
+    let already_had_daily = store.with(|s| {
+        s.messages
+            .iter()
+            .any(|m| m.project_id.as_deref() == Some(&p.id) && m.text.starts_with("Daily:"))
+    });
+    if !already_had_daily {
+        if let Some(pm) = first(store, &[Role::Pm]) {
+            let mut team: Vec<String> = vec![pm.id.clone()];
+            for r in [Role::Dev, Role::Reviewer, Role::Tester, Role::Designer] {
+                team.extend(store.staff(r).into_iter().map(|e| e.id));
+            }
+            meeting(store, &p.id, team.clone(), "Họp daily", true);
+            let task = format!(
+                "Họp daily đầu đợt làm việc. Các ticket:\n{}\nNhắn từng Dev (message_colleague, to_role = dev) việc cần làm trước và lưu ý quan trọng. Ngắn gọn. Xong gọi finish với tóm tắt cuộc họp.",
+                ticket_list(store, &p.id)
+            );
+            let r = agent::run(store, Job { employee_id: pm.id.clone(), project_id: p.id.clone(), phase: "standup", ticket_id: None, case_id: None, task }, cancel).await;
+            meeting(store, &p.id, team, "", false);
+            let r = r?;
+            store.post_message(Some(&p.id), &pm.id, "all", format!("Daily: {}", summary_of(&r.outcome)), "chat");
+        } else if let Some(from) = first(store, &[Role::Architect, Role::Designer, Role::Ba, Role::Ceo]) {
+            for d in &devs {
+                handoff(store, &p.id, &from.id, &d.id, format!("Có {todo} ticket cần làm trên bảng Kanban."));
+            }
         }
     }
 
     run_dev_workers(store, &p.id, cancel).await
 }
 
-struct CounterGuard(Arc<AtomicUsize>);
-impl Drop for CounterGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
+/// Sort key for picking the next workable ticket: finish Testing/Review tickets first so resumes never redo prior stages.
+fn ticket_pick_key(t: &Ticket) -> (u8, u8, u64) {
+    let stage_rank = match t.status {
+        TicketStatus::Testing => 0,
+        TicketStatus::Review => 1,
+        _ => 2,
+    };
+    (stage_rank, t.priority, t.created_at)
 }
 
-/// All devs work through the open tickets of a project in parallel until none are left.
+/// Processes open tickets of a project one at a time in priority/dependency order,
+/// rotating across enabled Devs. Serialising per project prevents two Devs sharing one
+/// working tree from clobbering each other's files or committing half-finished WIP together.
 pub(crate) async fn run_dev_workers(store: &S, pid: &str, cancel: &CancellationToken) -> Result<(), String> {
     let devs = store.staff(Role::Dev);
     if devs.is_empty() {
         return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
     }
-    let alive = Arc::new(AtomicUsize::new(devs.len()));
-    let busy = Arc::new(AtomicUsize::new(0));
-    let mut handles = vec![];
-    for d in devs {
-        let store = store.clone();
-        let pid = pid.to_string();
-        let cancel = cancel.clone();
-        let alive = alive.clone();
-        let busy = busy.clone();
-        handles.push(tokio::spawn(async move {
-            let _alive_guard = CounterGuard(alive.clone());
-            dev_worker(&store, &pid, &d.id, &cancel, &alive, &busy).await
-        }));
-    }
-    let mut first_err = None;
-    for h in handles {
-        match h.await {
-            // A failing worker does not stop colleagues; they finish their own tickets first.
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => first_err = first_err.or(Some(e)),
-            Err(e) => first_err = first_err.or(Some(e.to_string())),
-        }
-    }
-    match first_err {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
-}
-
-async fn dev_worker(store: &S, pid: &str, dev_id: &str, cancel: &CancellationToken, alive: &Arc<AtomicUsize>, busy: &Arc<AtomicUsize>) -> Result<(), String> {
+    let mut rr: usize = 0;
     loop {
         if cancel.is_cancelled() {
             return Err(ABORTED.into());
         }
-        // My own returned tickets first, then by priority, then oldest.
-        let picked = store.with(|s| {
+        let devs = store.staff(Role::Dev);
+        if devs.is_empty() {
+            return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
+        }
+        let picked: Option<(String, String, TicketStatus)> = store.with(|s| {
             let mut cands: Vec<&Ticket> = s
                 .tickets
                 .iter()
-                .filter(|t| t.project_id == pid && t.status == TicketStatus::Todo)
-                .filter(|t| t.assignee.as_deref().map_or(true, |a| a == dev_id || !s.employees.iter().any(|e| e.id == a && e.enabled)))
+                .filter(|t| t.project_id == pid && matches!(t.status, TicketStatus::Todo | TicketStatus::Review | TicketStatus::Testing))
                 .collect();
-            cands.sort_by_key(|t| (t.assignee.as_deref() != Some(dev_id), t.priority, t.created_at));
-            cands.first().map(|t| t.id.clone())
+            cands.sort_by_key(|t| ticket_pick_key(t));
+            let t = cands.first()?;
+            let dev_id = t
+                .assignee
+                .as_deref()
+                .filter(|a| devs.iter().any(|d| d.id == *a))
+                .map(str::to_string)
+                .unwrap_or_else(|| devs[rr % devs.len()].id.clone());
+            Some((t.id.clone(), dev_id, t.status))
         });
-        match picked {
-            Some(tid) => {
-                busy.fetch_add(1, Ordering::SeqCst);
-                let _busy_guard = CounterGuard(busy.clone());
-                store.update_ticket(&tid, |t| {
-                    t.status = TicketStatus::InProgress;
-                    t.assignee = Some(dev_id.to_string());
-                });
-                process_ticket(store, pid, dev_id, &tid, cancel).await?;
+        let Some((tid, dev_id, start_stage)) = picked else {
+            return Ok(());
+        };
+        rr = rr.wrapping_add(1);
+        store.update_ticket(&tid, |t| {
+            if t.status == TicketStatus::Todo {
+                t.status = TicketStatus::InProgress;
             }
-            None => {
-                let tickets = store.tickets_of(pid);
-                let has_open = tickets.iter().any(|t| is_open(t.status));
-                if !has_open {
-                    return Ok(());
-                }
-                // Avoid permanent deadlock when another dev worker exited with an error leaving an orphaned open ticket.
-                let has_todo = tickets.iter().any(|t| t.status == TicketStatus::Todo);
-                if busy.load(Ordering::SeqCst) == 0 && !(has_todo && alive.load(Ordering::SeqCst) > 1) {
-                    return Ok(());
-                }
-                store.set_runtime(dev_id, EmpStatus::Idle, "Chờ ticket", Some(pid), None);
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(800)) => {}
-                    _ = cancel.cancelled() => return Err(ABORTED.into()),
-                }
+            if t.assignee.is_none() {
+                t.assignee = Some(dev_id.clone());
             }
-        }
+        });
+        process_ticket(store, pid, &dev_id, &tid, start_stage, cancel).await?;
     }
+}
+
+fn block_ticket_refusal(store: &S, pid: &str, tid: &str, key: &str, title: &str, role_who: &str, err: &str) {
+    let reason = format!("Bị chặn do model từ chối yêu cầu tại bước {role_who}: {}", short_text(err, 240));
+    store.update_ticket(tid, |t| {
+        t.status = TicketStatus::Blocked;
+        t.notes.push(reason.clone());
+    });
+    if let Some(p) = store.project(pid) {
+        crate::harness::record_entry(&store.dir_of(&p), &format!("{key} · Blocked ({role_who})"), &reason);
+    }
+    store.post_message(
+        Some(pid),
+        "system",
+        "chairman",
+        format!("Ticket {key} ({title}) đã bị đánh dấu Blocked — {reason}. Các ticket khác vẫn tiếp tục."),
+        "system",
+    );
 }
 
 fn ticket_brief(t: &Ticket) -> String {
@@ -935,37 +944,102 @@ fn ticket_brief(t: &Ticket) -> String {
     s
 }
 
-async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, cancel: &CancellationToken) -> Result<(), String> {
+fn last_dev_summary(t: &Ticket) -> String {
+    t.notes
+        .iter()
+        .rev()
+        .find(|n| n.contains("(Dev):"))
+        .cloned()
+        .unwrap_or_else(|| format!("Đã hoàn thành {} ({}), tiếp tục bước kiểm tra sau tạm dừng.", t.key, t.title))
+}
+
+async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start_stage: TicketStatus, cancel: &CancellationToken) -> Result<(), String> {
     let max_bounces = store.with(|s| s.settings.max_bounces);
+    let project_dir = store.project(pid).map(|p| store.dir_of(&p));
     loop {
         let t = store.ticket(tid).ok_or("Ticket không tồn tại")?;
-        let task = format!(
-            "{}\nĐọc docs/REQUIREMENTS.md (và docs/DESIGN.md, design/tokens.css, docs/ARCHITECTURE.md, docs/DATA.md nếu có) cùng code hiện có. Viết code hoàn thành ticket này, theo thiết kế nếu có, đặt tệp đúng cây thư mục trong docs/ARCHITECTURE.md và chuẩn cấu trúc của công ty (src/ tách domain/data/ui, tests/unit|integration, không trùng lặp tệp, mỗi tệp một trách nhiệm), tự kiểm tra bằng run_command nếu phù hợp, rồi gọi finish với tóm tắt thay đổi.",
-            ticket_brief(&t)
-        );
-        let r = agent::run(store, Job { employee_id: dev_id.into(), project_id: pid.into(), phase: "implement", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await?;
-        let dev_summary = summary_of(&r.outcome);
-        let dev_name = store.employee(dev_id).map(|e| e.name).unwrap_or_default();
-        store.update_ticket(tid, |t| t.notes.push(format!("{dev_name} (Dev): {dev_summary}")));
-
-        // Optional code review.
-        if let Some(rev) = first(store, &[Role::Reviewer]) {
-            store.update_ticket(tid, |t| t.status = TicketStatus::Review);
-            handoff(store, pid, dev_id, &rev.id, format!("Nhờ review {}: {}", t.key, t.title));
-            let task = format!("{}\nDev báo: {dev_summary}\n\nXem đúng phần thay đổi bằng run_command `git status` và `git diff -- <tệp liên quan>` rồi review: đúng chức năng, an toàn, dễ đọc, và đúng cấu trúc thư mục / quy ước trong docs/ARCHITECTURE.md (đặt sai chỗ, tệp trùng lặp, tệp quá dài nhiều trách nhiệm cũng là lỗi cần sửa). Gọi approve_code nếu đạt, request_changes nếu có lỗi thật cần sửa.", ticket_brief(&t));
-            let r = agent::run(store, Job { employee_id: rev.id.clone(), project_id: pid.into(), phase: "review", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await?;
-            store.kpi(&rev.id, |k| k.reviews += 1);
-            if let Outcome::Changes(c) = &r.outcome {
-                store.kpi(&rev.id, |k| k.changes_requested += 1);
-                store.kpi(dev_id, |k| k.tickets_returned += 1);
-                handoff(store, pid, &rev.id, dev_id, format!("{} cần sửa: {c}", t.key));
-                if bounce(store, tid, format!("{} (Reviewer): {c}", rev.name), max_bounces) {
+        let dev_summary = if matches!(start_stage, TicketStatus::Review | TicketStatus::Testing) {
+            last_dev_summary(&t)
+        } else {
+            store.update_ticket(tid, |t| t.status = TicketStatus::InProgress);
+            let task = format!(
+                "{}\nDựa vào Bộ nhớ tiến độ (docs/PROGRESS.md) và CHỈ đọc đúng các tệp/đoạn code liên quan trực tiếp tới ticket này (KHÔNG đọc lại toàn bộ docs/*.md hay cả dự án từ đầu khi tiêu chí đã rõ). Viết/sửa code hoàn thành ticket theo đúng cây thư mục trong docs/ARCHITECTURE.md và tiêu chí nghiệm thu, tự chạy test kiểm chứng bằng run_command, rồi gọi finish với tóm tắt ngắn gọn các tệp đã sửa và kết quả test.",
+                ticket_brief(&t)
+            );
+            let r = match agent::run(store, Job { employee_id: dev_id.into(), project_id: pid.into(), phase: "implement", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await {
+                Ok(r) => r,
+                Err(e) if agent::is_refusal_err(&e) => {
+                    block_ticket_refusal(store, pid, tid, &t.key, &t.title, "Dev", &e);
                     return Ok(());
                 }
-                continue;
+                Err(e) => return Err(e),
+            };
+            let s = summary_of(&r.outcome);
+            let dev_name = store.employee(dev_id).map(|e| e.name).unwrap_or_default();
+            store.update_ticket(tid, |t| t.notes.push(format!("{dev_name} (Dev): {s}")));
+            if let Some(dir) = project_dir.as_deref() {
+                crate::harness::record_entry(dir, &format!("{} · Dev bàn giao ({dev_name})", t.key), &short_text(&s, 700));
             }
-            let note = format!("{} (Reviewer): Duyệt. {}", rev.name, summary_of(&r.outcome));
-            store.update_ticket(tid, |t| t.notes.push(note));
+            s
+        };
+
+        let bounce_focus = if t.bounces >= 1 {
+            format!(
+                "\nLƯU Ý VÒNG KIỂM TRA LẠI (lần {}): Tập trung xác minh các lỗi đã báo ở vòng trước đã được sửa đúng và không gây hồi quy; KHÔNG mở rộng phạm vi sang các ca giả lập cực đoan ngoài tiêu chí nghiệm thu.",
+                t.bounces + 1
+            )
+        } else {
+            String::new()
+        };
+
+        // Optional code review (skipped on resume if ticket was already in Testing).
+        if start_stage != TicketStatus::Testing {
+            if let Some(rev) = first(store, &[Role::Reviewer]) {
+                store.update_ticket(tid, |t| t.status = TicketStatus::Review);
+                handoff(store, pid, dev_id, &rev.id, format!("Nhờ review {}: {}", t.key, t.title));
+                let task = format!(
+                    "{}\nDev báo: {dev_summary}{bounce_focus}\n\nƯU TIÊN chạy `git status -s` và `git diff` (hoặc `git show --stat HEAD`) để xem ĐÚNG phần vừa thay đổi, KHÔNG đọc lại toàn bộ các tệp dài hàng nghìn dòng từ đầu đến cuối; chỉ đọc thêm đúng đoạn hàm liên quan khi cần. Kiểm tra đúng tiêu chí nghiệm thu, an toàn, cấu trúc, rồi BẮT BUỘC gọi approve_code nếu đạt, hoặc request_changes nếu có lỗi thật cần sửa.",
+                    ticket_brief(&t)
+                );
+                let r = match agent::run(store, Job { employee_id: rev.id.clone(), project_id: pid.into(), phase: "review", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await {
+                    Ok(r) => r,
+                    Err(e) if agent::is_refusal_err(&e) => {
+                        block_ticket_refusal(store, pid, tid, &t.key, &t.title, "Reviewer", &e);
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e),
+                };
+                store.kpi(&rev.id, |k| k.reviews += 1);
+                match r.outcome {
+                    Outcome::Approve(comment) => {
+                        let note = format!("{} (Reviewer): Duyệt. {comment}", rev.name);
+                        store.update_ticket(tid, |t| t.notes.push(note));
+                    }
+                    Outcome::Changes(c) => {
+                        store.kpi(&rev.id, |k| k.changes_requested += 1);
+                        store.kpi(dev_id, |k| k.tickets_returned += 1);
+                        handoff(store, pid, &rev.id, dev_id, format!("{} cần sửa: {c}", t.key));
+                        if let Some(dir) = project_dir.as_deref() {
+                            crate::harness::record_entry(dir, &format!("{} · Reviewer yêu cầu sửa ({})", t.key, rev.name), &short_text(&c, 700));
+                        }
+                        if bounce(store, tid, format!("{} (Reviewer): {c}", rev.name), max_bounces) {
+                            return Ok(());
+                        }
+                        start_stage = TicketStatus::InProgress;
+                        continue;
+                    }
+                    other => {
+                        // Never treat an invalid/fallback outcome as Approve.
+                        let msg = format!("{} (Reviewer) kết thúc không gọi approve_code/request_changes: {}", rev.name, short_text(&summary_of(&other), 260));
+                        store.log_activity(&rev.id, Some(pid), "error", &msg);
+                        if bounce(store, tid, msg, max_bounces) {
+                            return Ok(());
+                        }
+                        start_stage = TicketStatus::InProgress;
+                        continue;
+                    }
+                }
+            }
         }
 
         // Optional QA.
@@ -977,30 +1051,57 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, cancel: &
         };
         store.update_ticket(tid, |t| t.status = TicketStatus::Testing);
         handoff(store, pid, dev_id, &tester.id, format!("Nhờ test {}: {}", t.key, t.title));
+        let browser_step = if project_dir.as_deref().map(has_preview).unwrap_or(false) {
+            format!(" test như người dùng trên trình duyệt thật ở bản xem thử {} (desktop và 375px, xem lỗi console) nếu có công cụ trình duyệt;", crate::config::preview_url(pid))
+        } else {
+            String::new()
+        };
         let task = format!(
-            "{}\nDev báo: {dev_summary}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy bộ test hiện có; test như người dùng trên trình duyệt thật ở bản xem thử {} (desktop và 375px, xem lỗi console) nếu có công cụ trình duyệt; thử ca biên; viết test tự động cho hành vi này và GIỮ LẠI trong dự án; cập nhật docs/TEST-PLAN.md. Chỉ đọc code liên quan tới ticket. Gọi pass_ticket nếu đạt hết, fail_ticket kèm mô tả lỗi cụ thể (bước tái hiện, mong đợi / thực tế, cỡ màn hình) nếu chưa đạt.",
+            "{}\nDev báo: {dev_summary}{bounce_focus}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy NGAY bộ test hiện có;{browser_step} xem `git show --stat` / `git diff` đúng phạm vi ticket (KHÔNG đọc lại từ đầu đến cuối các tệp dài > 500 dòng khi test đã xanh và tiêu chí đã rõ); bổ sung/giữ lại test tự động cho ca biên nếu còn thiếu; cập nhật docs/TEST-PLAN.md. BẮT BUỘC gọi pass_ticket ngay khi đạt hết tiêu chí, hoặc fail_ticket kèm mô tả lỗi cụ thể nếu chưa đạt.",
             ticket_brief(&t),
-            crate::config::preview_url(pid)
         );
-        let r = agent::run(store, Job { employee_id: tester.id.clone(), project_id: pid.into(), phase: "test", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await?;
+        let r = match agent::run(store, Job { employee_id: tester.id.clone(), project_id: pid.into(), phase: "test", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await {
+            Ok(r) => r,
+            Err(e) if agent::is_refusal_err(&e) => {
+                block_ticket_refusal(store, pid, tid, &t.key, &t.title, "Tester", &e);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         match r.outcome {
+            Outcome::Pass(summary) => {
+                store.update_ticket(tid, |t| {
+                    t.status = TicketStatus::Done;
+                    t.notes.push(format!("{} (Tester): Đạt. {summary}", tester.name));
+                });
+                store.kpi(dev_id, |k| k.tickets_done += 1);
+                store.post_message(Some(pid), &tester.id, dev_id, format!("{} đạt ✔", t.key), "chat");
+                if let Some(dir) = project_dir.as_deref() {
+                    crate::harness::record_entry(dir, &format!("{} · ĐẠT ✔ ({})", t.key, tester.name), &short_text(&summary, 500));
+                }
+                crate::gitflow::commit(store, pid, &format!("{}: {}\n\n{}", t.key, t.title, short_text(&dev_summary, 600))).await;
+                return Ok(());
+            }
             Outcome::Fail(report) => {
                 store.kpi(&tester.id, |k| k.bugs_found += 1);
                 store.kpi(dev_id, |k| k.tickets_returned += 1);
                 handoff(store, pid, &tester.id, dev_id, format!("{} chưa đạt: {report}", t.key));
+                if let Some(dir) = project_dir.as_deref() {
+                    crate::harness::record_entry(dir, &format!("{} · QA báo lỗi ({})", t.key, tester.name), &short_text(&report, 700));
+                }
                 if bounce(store, tid, format!("{} (Tester): {report}", tester.name), max_bounces) {
                     return Ok(());
                 }
+                start_stage = TicketStatus::InProgress;
             }
             other => {
-                store.update_ticket(tid, |t| {
-                    t.status = TicketStatus::Done;
-                    t.notes.push(format!("{} (Tester): Đạt. {}", tester.name, summary_of(&other)));
-                });
-                store.kpi(dev_id, |k| k.tickets_done += 1);
-                store.post_message(Some(pid), &tester.id, dev_id, format!("{} đạt ✔", t.key), "chat");
-                crate::gitflow::commit(store, pid, &format!("{}: {}\n\n{}", t.key, t.title, short_text(&dev_summary, 600))).await;
-                return Ok(());
+                // Never treat an invalid/fallback outcome as Pass.
+                let msg = format!("{} (Tester) kết thúc không gọi pass_ticket/fail_ticket: {}", tester.name, short_text(&summary_of(&other), 260));
+                store.log_activity(&tester.id, Some(pid), "error", &msg);
+                if bounce(store, tid, msg, max_bounces) {
+                    return Ok(());
+                }
+                start_stage = TicketStatus::InProgress;
             }
         }
     }
@@ -1308,5 +1409,34 @@ mod vote_tests {
         assert!(md.contains("**V1 → B: 3 phiếu**"), "{md}");
         // V2: A=2 (ceo, ba), B=2 (dev, arch) → tie, CEO's pick wins.
         assert!(md.contains("**V2 → A: 2 phiếu (hòa phiếu, phiếu CEO quyết)**"), "{md}");
+    }
+
+    #[test]
+    fn resume_prioritizes_testing_then_review_then_todo() {
+        let mk = |key: &str, status: TicketStatus, prio: u8, ts: u64| Ticket {
+            id: key.into(),
+            project_id: "p".into(),
+            key: key.into(),
+            title: key.into(),
+            description: String::new(),
+            kind: "feature".into(),
+            status,
+            priority: prio,
+            assignee: None,
+            acceptance: vec![],
+            notes: vec![],
+            bounces: 0,
+            created_by: "pm".into(),
+            created_at: ts,
+            updated_at: ts,
+        };
+        let mut tks = vec![
+            mk("T-6", TicketStatus::Todo, 1, 1),
+            mk("T-4", TicketStatus::Review, 2, 2),
+            mk("T-5", TicketStatus::Testing, 3, 3),
+        ];
+        tks.sort_by_key(|t| ticket_pick_key(t));
+        let keys: Vec<&str> = tks.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, vec!["T-5", "T-4", "T-6"]);
     }
 }

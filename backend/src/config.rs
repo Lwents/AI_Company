@@ -47,25 +47,33 @@ pub fn role_duty(r: Role) -> &'static str {
 }
 
 /// The company's engineering standard for every product repository.
-pub const REPO_STANDARD: &str = "CHUẨN CẤU TRÚC DỰ ÁN CỦA CÔNG TY (bắt buộc, như repo của một công ty phần mềm lớn). Mục tiêu số 1: DỄ NÂNG CẤP TỪNG PHẦN NHỎ — sửa hay thêm một trang / một chức năng chỉ đụng vào đúng thư mục của nó.
-- Gốc dự án: README.md (giới thiệu, yêu cầu, cài đặt, chạy, test, cấu trúc thư mục, cách thêm trang/module mới), CHANGELOG.md, .gitignore, .editorconfig, tệp dự án (package.json, tsconfig.json, vite.config.ts…).
-- Chia theo MODULE / TRANG (feature-based), không gom theo loại tệp:
-  - src/app/: khởi động ứng dụng, router, layout chung, provider. Router đăng ký các trang; thêm trang = thêm 1 dòng route.
-  - src/pages/<ten-trang>/: mỗi trang một thư mục tự chứa (component trang, style riêng, test cạnh code, index.* xuất ra ngoài). Trang chỉ ghép các module lại, không chứa logic nghiệp vụ.
-  - src/modules/<ten-module>/: mỗi chức năng nghiệp vụ một thư mục tự chứa: components/, services/ (gọi API / lưu trữ), store hoặc state, model/types, utils riêng, styles, __tests__/, và index.* là API công khai duy nhất.
-  - src/shared/: thứ dùng chung thật sự (ui/ gồm nút, ô nhập, hộp thoại; lib/ tiện ích; api/ client; types/; config/ hằng số).
-- Quy tắc phụ thuộc: pages → modules → shared; module KHÔNG import sâu vào module khác, chỉ qua index của nó; shared không import modules/pages. Không vòng phụ thuộc.
-- styles: token thiết kế dùng trực tiếp design/tokens.css (hoặc import nó), KHÔNG sao chép thành tệp thứ hai; style của trang/module nằm trong thư mục của nó.
-- public/: tài nguyên tĩnh (ảnh, font, favicon).
-- tests/: test tích hợp / e2e xuyên module; unit test đặt cạnh code trong module.
-- data/: schema/, migrations/, seeds/ (Data Engineer phụ trách).
-- scripts/: build, check, seed. config/: cấu hình theo môi trường và .env.example; không commit bí mật.
-- docs/: PLAN, DECISIONS, REQUIREMENTS, DESIGN, ARCHITECTURE (có bảng danh sách module/trang và người phụ trách), DATA, RELEASE, REPORT; docs/adr/0001-ten-quyet-dinh.md cho từng quyết định kiến trúc; docs/modules/<ten-module>.md mô tả từng module.
-- .github/workflows/ci.yml: cài đặt, kiểm tra kiểu / lint, test, build.
-Quy ước: tên thư mục / tệp kebab-case (component theo quy ước của framework); mỗi tệp một trách nhiệm, thường dưới khoảng 300 dòng; không trùng lặp tệp hay code; không để code chết; một kiểu viết thống nhất. Nếu dự án có bước build (vd. Vite) thì build ra dist/ với đường dẫn tương đối (Vite: base: './') để mở được bản xem thử.";
+pub const REPO_STANDARD: &str = "CHUẨN CẤU TRÚC DỰ ÁN CỦA CÔNG TY (bắt buộc — sạch, tách tầng rõ ràng như dự án sản xuất chuyên nghiệp). Mục tiêu số 1: NGƯỜI ĐỌC MỞ RA HIỂU NGAY VÀ DỄ NÂNG CẤP TỪNG PHẦN NHỎ (không nhồi code vào 1–2 tệp khổng lồ).
+- TÁCH RIÊNG FRONTEND & BACKEND ở gốc dự án khi sản phẩm có cả giao diện lẫn máy chủ/API (bất kể dùng React, Vue, Next, FastAPI, Django, Node/Express, Rust, Go...):
+  1. `frontend/` (giao diện người dùng — tách lớp rõ ràng):
+     - `frontend/public/`: tài nguyên tĩnh (favicon, ảnh công khai).
+     - `frontend/src/pages/<nhom-hoac-vai-tro>/<ten-trang>/`: từng trang riêng biệt (vd. `pages/auth/Login`, `pages/admin/users/Users`, `pages/common/NotFound`). Trang chỉ lắp ghép component & gọi store/service, KHÔNG nhét logic xử lý dài.
+     - `frontend/src/layouts/`: khung giao diện chung (AdminLayout, MainLayout, AuthLayout...).
+     - `frontend/src/components/ui/`: component nguyên tử tái sử dụng (Button, Card, Input, Modal, Table, Badge, Select, Pagination...).
+     - `frontend/src/components/shared/`: thành phần dùng chung toàn app (Navbar, Sidebar, Footer, Breadcrumb, ConfirmDialog, NotificationBell...).
+     - `frontend/src/components/<nghiep-vu>/`: widget chuyên biệt của từng tính năng.
+     - `frontend/src/services/`: mỗi miền nghiệp vụ 1 tệp gọi API riêng (`auth.service.*`, `user.service.*`...).
+     - `frontend/src/stores/`: quản lý state theo từng miền (`auth.store.*`, `ui.store.*`, `theme.store.*`...).
+     - `frontend/src/hooks/` (React) hoặc `frontend/src/composables/` (Vue): logic dùng lại.
+     - `frontend/src/router/`: đăng ký định tuyến tập trung; `frontend/src/styles/`: design tokens (`tokens.css`) và style chung; `frontend/src/utils/`: `formatters`, `validators`, `constants`, `toast`; `frontend/src/config/` & `frontend/src/assets/`.
+  2. `backend/` (máy chủ / API / nghiệp vụ — chia theo miền nghiệp vụ):
+     - `backend/<ten-module>/api/` (routes / controllers / views / serializers — chỉ nhận/trả request).
+     - `backend/<ten-module>/services/` (luồng nghiệp vụ / use cases).
+     - `backend/<ten-module>/domain/` (model, thực thể, luật nghiệp vụ thuần).
+     - `backend/<ten-module>/infrastructure/` (DB, hàng đợi, adapter ngoài nếu cần).
+     - `backend/<ten-module>/migrations/` & `backend/<ten-module>/tests/`.
+     - `backend/core/` (hoặc `backend/shared/`): cấu hình, middleware, auth, lỗi chung.
+  (Nếu dự án thuần 1 đầu như web tĩnh không backend hoặc công cụ CLI thuần không giao diện, giữ nguyên cách tách lớp nhỏ gọn tương ứng; nếu nâng cấp repo có sẵn, tôn trọng điểm vào cũ nhưng vẫn tách module nhỏ gọn rõ ràng.)
+- Gốc dự án gọn gàng: `README.md` (mô tả sản phẩm, sơ đồ cây thư mục `frontend/` & `backend/`, yêu cầu, cách cài, chạy dev, test, build), `CHANGELOG.md`, `.gitignore`, `.editorconfig`, `.env.example`, `docs/`, `tests/` (integration/e2e xuyên tầng), `.github/workflows/ci.yml`.
+- `docs/`: PLAN, DECISIONS, REQUIREMENTS, DESIGN, ARCHITECTURE (có sơ đồ cây thư mục + bảng module/trang), DATA, RELEASE, REPORT; `docs/adr/`; `docs/modules/<ten-module>.md`.
+- CHỐNG TỆP KHỔNG LỒ (bắt buộc): mỗi tệp đúng 1 trách nhiệm, giữ gọn **~150–300 dòng** (tuyệt đối tránh tệp > 400 dòng ôm nhiều chức năng — hãy tách nhỏ thành component / service / domain module con); không trùng lặp, không code chết; quy tắc phụ thuộc 1 chiều (`pages → components/stores/services → utils`, backend `api → services → domain`), không vòng phụ thuộc. Nếu frontend có bước build (Vite), build ra `frontend/dist/` (hoặc `dist/`) với `base: './'` để mở xem thử được ngay.";
 
 /// The company's default technology direction when the chairman has no preference.
-pub const TECH_GUIDE: &str = "Công nghệ hiện đại, phổ biến, còn được bảo trì tích cực và có cộng đồng lớn (ví dụ web: Vite + TypeScript + React/Vue/Svelte, hoặc Next.js/Nuxt; backend: Node.js với Fastify/NestJS hoặc tương đương; dữ liệu: SQLite/PostgreSQL với Prisma/Drizzle khi cần server; test: Vitest/Playwright; style: CSS Modules hoặc Tailwind). Tránh công nghệ cũ hoặc tự chế khi đã có chuẩn tốt.";
+pub const TECH_GUIDE: &str = "Công nghệ hiện đại, phổ biến, bảo trì tốt và phân tách rõ Frontend / Backend (ví dụ Frontend: Vite + TypeScript + React hoặc Vue 3 + Tailwind/CSS tokens; Backend: FastAPI/Django với Python, hoặc Fastify/NestJS/Express + TypeScript với Node.js, hoặc Axum với Rust; Dữ liệu: SQLite/PostgreSQL; Test: Vitest/Pytest/Playwright). Chọn đúng công nghệ Chủ tịch yêu cầu nếu có, luôn chia nhỏ module dễ đọc và dễ nâng cấp.";
 
 /// Where employees (and their browser) can open a project's preview.
 pub fn preview_url(project_id: &str) -> String {
@@ -139,6 +147,8 @@ fn emp(id: &str, name: &str, role: Role, model: &str, color: usize, effort: &str
         output_price: o,
         base_url: String::new(),
         extra_prompt: String::new(),
+        skill_text: String::new(),
+        skill_file: String::new(),
         color: COLORS[color % COLORS.len()].into(),
         enabled: true,
     }

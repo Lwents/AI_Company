@@ -7,19 +7,31 @@ use serde_json::{json, Value};
 fn to_messages(system: &str, messages: &[LlmMessage]) -> Vec<Value> {
     let mut out = vec![json!({ "role": "system", "content": system })];
     // Index of the first image still sent in full (older ones are replaced by a note).
-    let total: usize = messages
+    let total_images: usize = messages
         .iter()
         .map(|m| match m {
             LlmMessage::User { tool_results, .. } => tool_results.iter().map(|r| r.images.len()).sum(),
             _ => 0,
         })
         .sum();
-    let keep_from = total.saturating_sub(super::KEEP_IMAGES);
+    let keep_from = total_images.saturating_sub(super::KEEP_IMAGES);
+    let total_tool_turns = messages
+        .iter()
+        .filter(|m| matches!(m, LlmMessage::User { tool_results, .. } if !tool_results.is_empty()))
+        .count();
+    let keep_full_from = total_tool_turns.saturating_sub(super::KEEP_FULL_TOOL_TURNS);
     let mut seen = 0usize;
+    let mut tool_turn = 0usize;
     for m in messages {
         match m {
             LlmMessage::Assistant { text, tool_calls, .. } => {
-                let mut msg = json!({ "role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) } });
+                // Gemini/OpenAI proxies reject assistant messages with null content and no tool_calls (400 INVALID_ARGUMENT).
+                let content = if text.is_empty() {
+                    if tool_calls.is_empty() { json!("(trống)") } else { Value::Null }
+                } else {
+                    json!(text)
+                };
+                let mut msg = json!({ "role": "assistant", "content": content });
                 if !tool_calls.is_empty() {
                     msg["tool_calls"] = tool_calls
                         .iter()
@@ -32,9 +44,20 @@ fn to_messages(system: &str, messages: &[LlmMessage]) -> Vec<Value> {
                 out.push(msg);
             }
             LlmMessage::User { text, tool_results } => {
+                let keep_full = tool_turn >= keep_full_from;
+                if !tool_results.is_empty() {
+                    tool_turn += 1;
+                }
                 let mut parts: Vec<Value> = vec![];
                 for r in tool_results {
-                    let content = if r.is_error { format!("LỖI: {}", r.content) } else { r.content.clone() };
+                    let body = super::compact_tool_result(&r.content, keep_full);
+                    let content = if r.is_error {
+                        format!("LỖI: {body}")
+                    } else if body.is_empty() {
+                        "(trống)".to_string()
+                    } else {
+                        body
+                    };
                     out.push(json!({ "role": "tool", "tool_call_id": r.id, "content": content }));
                     for (mime, data) in &r.images {
                         if seen >= keep_from {
@@ -43,12 +66,14 @@ fn to_messages(system: &str, messages: &[LlmMessage]) -> Vec<Value> {
                         seen += 1;
                     }
                 }
-                // Chat Completions can't put images in tool messages: attach them as a user turn.
+                // Chat Completions can't put images in tool messages: attach them (and optional text) in a single user turn.
                 if !parts.is_empty() {
                     parts.insert(0, json!({ "type": "text", "text": "Ảnh chụp màn hình từ công cụ ở trên:" }));
+                    if let Some(t) = text.as_deref().filter(|s| !s.is_empty()) {
+                        parts.push(json!({ "type": "text", "text": t }));
+                    }
                     out.push(json!({ "role": "user", "content": parts }));
-                }
-                if let Some(t) = text {
+                } else if let Some(t) = text.as_deref().filter(|s| !s.is_empty()) {
                     out.push(json!({ "role": "user", "content": t }));
                 }
             }
@@ -190,4 +215,34 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
         raw: None,
         raw_provider: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::{LlmMessage, ToolResult};
+
+    #[test]
+    fn avoids_invalid_argument_shapes_and_compacts_old_results() {
+        let big = "x".repeat(7000);
+        let mut msgs = vec![
+            LlmMessage::User { text: Some("start".into()), tool_results: vec![] },
+            LlmMessage::Assistant { text: String::new(), tool_calls: vec![], raw: None, raw_provider: None },
+        ];
+        // Add KEEP_FULL_TOOL_TURNS + 2 tool turns so the first 2 are compacted while the rest stay full.
+        let total = crate::llm::KEEP_FULL_TOOL_TURNS + 2;
+        for i in 0..total {
+            msgs.push(LlmMessage::User {
+                text: None,
+                tool_results: vec![ToolResult { id: format!("c{i}"), content: big.clone(), is_error: false, images: vec![] }],
+            });
+        }
+        let out = to_messages("sys", &msgs);
+        // Empty assistant turn with no tool_calls must not have null content.
+        assert_eq!(out[2]["role"], "assistant");
+        assert_eq!(out[2]["content"], "(trống)");
+        // Old tool result is compacted; latest tool result is preserved in full.
+        assert!(out[3]["content"].as_str().unwrap().contains("đã rút gọn"));
+        assert_eq!(out[2 + total]["content"].as_str().unwrap().len(), 7000);
+    }
 }

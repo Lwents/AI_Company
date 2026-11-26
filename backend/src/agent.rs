@@ -28,6 +28,7 @@ fn system_prompt(e: &Employee, project: &Project, dir: &PathBuf) -> String {
 Dự án: {pname}\nThư mục dự án: {dir} (mọi đường dẫn trong tool là tương đối so với thư mục này).\n\n\
 Quy tắc:\n\
 - Làm việc bằng tool. Đọc tài liệu trong docs/ trước khi làm nếu cần ngữ cảnh.\n\
+- Với tệp dài (> 200 dòng): dùng read_file kèm start_line/end_line để đọc đúng đoạn và ưu tiên edit_file để sửa từng chỗ thay vì viết lại cả tệp bằng write_file.\n\
 - Ưu tiên giải pháp đơn giản, chạy được ngay, ít phụ thuộc.\n\
 - Không đọc/ghi ra ngoài thư mục dự án. Không đưa API key vào code.\n\
 - Viết bằng tiếng Việt (code và tên tệp bằng tiếng Anh).\n\
@@ -115,13 +116,26 @@ fn describe_call(name: &str, input: &serde_json::Value) -> String {
             "browser_click" => format!("Bấm {}", g("element")),
             "browser_type" => format!("Gõ vào {}", g("element")),
             "browser_resize" => "Đổi cỡ màn hình".into(),
+            "desktop_list_windows" => "Xem cửa sổ trên máy".into(),
+            "desktop_launch" => format!("Mở ứng dụng {}", g("app")),
+            "desktop_close_app" => format!("Đóng ứng dụng {}", g("app")),
+            "desktop_focus_window" => format!("Chuyển cửa sổ {}", g("app")),
+            "desktop_snapshot" => "Đọc UI cửa sổ".into(),
+            "desktop_screenshot" => "Chụp ảnh cửa sổ".into(),
+            "desktop_click" => format!("Bấm {}", g("ref")),
+            "desktop_type" => format!("Gõ vào {}", g("ref")),
             _ => tool.replace('_', " "),
         };
         return format!("[{server}] {what}");
     }
     match name {
         "write_file" => format!("Ghi {}", g("path")),
-        "read_file" => format!("Đọc {}", g("path")),
+        "edit_file" => format!("Sửa {}", g("path")),
+        "read_file" => match (input.get("start_line").and_then(|v| v.as_u64()), input.get("end_line").and_then(|v| v.as_u64())) {
+            (Some(s), Some(e)) => format!("Đọc {} (L{s}-L{e})", g("path")),
+            (Some(s), None) => format!("Đọc {} (từ L{s})", g("path")),
+            _ => format!("Đọc {}", g("path")),
+        },
         "list_files" => "Xem danh sách tệp".into(),
         "run_command" => format!("$ {}", g("command")),
         "create_ticket" => format!("Tạo ticket: {}", g("title")),
@@ -167,10 +181,47 @@ pub fn case_transcript(store: &S, c: &SupportCase) -> String {
     s
 }
 
+/// Detects policy refusals returned as normal text (`finish_reason = stop`) by OpenAI-compatible proxies.
+pub fn looks_like_refusal(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+    let head: String = t.chars().take(280).collect();
+    const PHRASES: [&str; 15] = [
+        "sorry, i cannot",
+        "sorry, i can't",
+        "i'm sorry, i cannot",
+        "i'm sorry, i can't",
+        "i apologize, but i cannot",
+        "i apologize, but i can't",
+        "i cannot fulfill",
+        "i can't fulfill",
+        "i cannot assist with",
+        "i cannot help with",
+        "i am unable to fulfill",
+        "i'm unable to fulfill",
+        "tôi xin lỗi, tôi không thể",
+        "xin lỗi, tôi không thể",
+        "tôi không thể đáp ứng yêu cầu",
+    ];
+    PHRASES.iter().any(|p| head.contains(p))
+}
+
+pub fn is_refusal_err(e: &str) -> bool {
+    e.contains("từ chối yêu cầu")
+}
+
 /// Errors a different person, model or wording can get past (model / provider trouble, refusals, running out of steps).
 fn recoverable(e: &str) -> bool {
     const PROVIDERS: [&str; 6] = ["Custom", "Openai", "Openrouter", "Gemini", "Anthropic", "Ollama"];
-    e != "aborted" && (PROVIDERS.iter().any(|p| e.starts_with(p)) || e.contains("từ chối yêu cầu") || e.contains("bước mà chưa xong"))
+    e != "aborted"
+        && (PROVIDERS.iter().any(|p| e.starts_with(p))
+            || is_refusal_err(e)
+            || e.contains("bước mà chưa xong")
+            || e.contains("không trả lời")
+            || e.contains("không gọi công cụ kết thúc")
+            || e.contains("không gọi finish"))
 }
 
 /// Who steps in when someone is stuck: Tech Lead for engineers, otherwise the CEO (then the PM).
@@ -209,10 +260,20 @@ async fn rephrase(store: &S, sup: &Employee, stuck: &Employee, job: &Job, err: &
 }
 
 /// Runs a job; if it fails for a recoverable reason the supervisor steps in (up to twice):
-/// 1st: hand it to a colleague with the same role, or to the backup model;
+/// 1st: hand it to a colleague with the same role (skipping same-model colleagues on refusal), or to the backup model;
 /// 2nd: reword the assignment and try again (on the backup model if there is one).
 /// Jobs that don't need the strongest model.
-const LIGHT_PHASES: [&str; 3] = ["meeting_vote", "minutes", "standup"];
+const LIGHT_PHASES: [&str; 9] = [
+    "meeting_opinion",
+    "meeting_ballot",
+    "meeting_vote",
+    "minutes",
+    "standup",
+    "planning",
+    "clarify",
+    "consult",
+    "retro",
+];
 
 pub async fn run(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobResult, String> {
     let mut job = job;
@@ -226,16 +287,57 @@ pub async fn run(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
             _ => return r,
         };
         let Some(stuck) = store.employee(&job.employee_id) else { return r };
+        let current_model = model.as_deref().unwrap_or(&stuck.model);
         let sup = supervisor(store, &stuck);
         let sup_name = sup.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "Hệ thống".into());
         let sup_id = sup.as_ref().map(|s| s.id.clone()).unwrap_or_else(|| "system".into());
         let backup = store.with(|s| s.settings.fallback_model.trim().to_string());
-        let backup = (!backup.is_empty() && backup != stuck.model).then_some(backup);
+        let backup = (!backup.is_empty() && backup != current_model).then_some(backup);
+
+        // On policy refusal, only retry once on a DIFFERENT model (backup or colleague on another model);
+        // retrying on the exact same model just wastes tokens and loops.
+        if is_refusal_err(&err) {
+            if attempt >= 1 {
+                return r;
+            }
+            let diff_colleague = store
+                .staff(stuck.role)
+                .into_iter()
+                .find(|e| e.id != stuck.id && e.id != original && e.provider != ProviderId::Mock && e.model != current_model);
+            if let Some(c) = diff_colleague {
+                store.post_message(
+                    Some(&job.project_id),
+                    &sup_id,
+                    "all",
+                    format!("{} gặp từ chối từ model ({}). {} giao lại cho {} (model {}).", stuck.name, short(&err, 90), sup_name, c.name, c.model),
+                    "chat",
+                );
+                job.employee_id = c.id;
+                model = None;
+                continue;
+            } else if let Some(b) = backup {
+                store.post_message(
+                    Some(&job.project_id),
+                    &sup_id,
+                    "all",
+                    format!("{} gặp từ chối từ model ({}). {} thử lại 1 lần bằng model dự phòng {}.", stuck.name, short(&err, 90), sup_name, b),
+                    "chat",
+                );
+                model = Some(b);
+                continue;
+            } else {
+                return r;
+            }
+        }
+
         if attempt == 0 {
             let colleague = store.staff(stuck.role).into_iter().find(|e| e.id != stuck.id && e.id != original && e.provider != ProviderId::Mock);
             let note = if let Some(c) = colleague {
                 let n = format!("{} gặp sự cố ({}). {} giao lại việc cho {}.", stuck.name, short(&err, 90), sup_name, c.name);
                 job.employee_id = c.id;
+                if err.contains("bước mà chưa xong") && !job.task.contains("BÀN GIAO HARNESS") {
+                    job.task.push_str("\n\n[BÀN GIAO HARNESS]: Đồng nghiệp trước đã lưu bản Checkpoint tiến độ vào docs/PROGRESS.md (và mục BỘ NHỚ TIẾN ĐỘ DỰ ÁN bên dưới). Hãy nối tiếp đúng chỗ đang dở, KHÔNG làm lại hoặc đọc lại các tệp đã hoàn tất.");
+                }
                 n
             } else if let Some(b) = backup.clone() {
                 let n = format!("{} gặp sự cố ({}). {} cho {} làm tiếp bằng model dự phòng {}.", stuck.name, short(&err, 90), sup_name, stuck.name, b);
@@ -315,23 +417,33 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
     };
     let mut tools = tools::tools_for(emp.role, job.phase);
     let mut system = system_prompt(&emp, &project, &dir);
-    // Skills (role playbooks) and MCP servers (browser, docs, …) for this role.
+    // Skills (role playbooks + per-employee custom skills) and MCP servers (browser, docs, …) for this role.
     let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-    system.push_str(&crate::skills::for_role(&root, emp.role));
-    let mut mcp = if emp.provider == ProviderId::Mock { None } else { Some(crate::mcp::Session::start(&root, &dir, emp.role).await) };
+    system.push_str(&crate::skills::for_employee(&root, &emp));
+    let mut mcp = if emp.provider == ProviderId::Mock { None } else { Some(crate::mcp::Session::start(&root, &dir, emp.role, job.phase).await) };
     if let Some(m) = &mcp {
         for t in &m.tools {
             tools.push(llm::ToolDef { name: t.name.clone(), description: t.description.clone(), schema: t.schema.clone() });
         }
         if !m.hints.is_empty() {
-            system.push_str(&format!(
-                "\n\nCông cụ MCP bạn có (tên dạng <nhóm>__<công cụ>):\n{}\nBản xem thử sản phẩm: {} (đã build thì là bản build trong dist/; tệp lẻ như design/mockup.html mở bằng đường dẫn tương ứng).",
-                m.hints.join("\n"),
-                crate::config::preview_url(&project.id)
-            ));
+            let preview_hint = if crate::workflow::has_preview(&dir) || job.phase == "design" {
+                format!(
+                    "\nBản xem thử sản phẩm: {} (đã build thì là bản build trong dist/; tệp lẻ như design/mockup.html mở bằng đường dẫn tương ứng).",
+                    crate::config::preview_url(&project.id)
+                )
+            } else {
+                String::new()
+            };
+            system.push_str(&format!("\n\nCông cụ MCP bạn có (tên dạng <nhóm>__<công cụ>):\n{}{preview_hint}", m.hints.join("\n")));
         }
     }
     let mut first = job.task.clone();
+    if crate::harness::wants_briefing(job.phase) {
+        let brief = crate::harness::briefing(store, &project, &dir).await;
+        if !brief.is_empty() {
+            first.push_str(&brief);
+        }
+    }
     if let Some(inbox) = take_inbox(store, &emp.id, &project.id) {
         first.push_str(&inbox);
     }
@@ -340,20 +452,23 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         store: store.clone(),
         project_id: project.id.clone(),
         employee: emp.clone(),
-        dir,
+        dir: dir.clone(),
         ticket_id: job.ticket_id.clone(),
         case_id: job.case_id.clone(),
         cancel: cancel.clone(),
         outcome: None,
         created_tickets: 0,
         last_write: None,
+        read_ranges: std::collections::HashMap::new(),
+        read_files: std::collections::HashMap::new(),
     };
     let pid = Some(project.id.as_str());
     let tid = job.ticket_id.as_deref();
     let max_steps = store.with(|s| s.settings.max_agent_steps).max(3);
     let mut nudges = 0;
+    let mut next_compact_step: u32 = 48;
 
-    for _step in 0..max_steps {
+    for step in 0..max_steps {
         if cancel.is_cancelled() {
             return Err("aborted".into());
         }
@@ -362,6 +477,17 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         let mut emp_now = store.employee(&emp.id).unwrap_or_else(|| emp.clone());
         if let Some(m) = model {
             emp_now.model = m.to_string();
+        }
+        // Harness context compaction: periodically summarize older middle turns into dense Working Memory.
+        if step >= next_compact_step && messages.len() >= 65 {
+            store.set_runtime(&emp.id, EmpStatus::Thinking, "Đang nén bộ nhớ làm việc (Harness)", pid, tid);
+            let permit = tokio::select! {
+                p = store.llm_slots.acquire() => p.map_err(|e| e.to_string())?,
+                _ = cancel.cancelled() => return Err("aborted".into()),
+            };
+            let _ = crate::harness::maybe_compact(store, &emp_now, &project, &mut messages, 26, cancel).await;
+            drop(permit);
+            next_compact_step = step + 22;
         }
         store.set_runtime(&emp.id, EmpStatus::Thinking, format!("Đang suy nghĩ · {}", emp_now.model), pid, tid);
         let permit = tokio::select! {
@@ -388,8 +514,14 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         if !res.text.trim().is_empty() {
             store.log_activity(&emp.id, pid, "llm", &res.text);
         }
-        if res.stop == Stop::Refusal {
-            return Err(format!("Model {} từ chối yêu cầu này", emp_now.model));
+        if res.stop == Stop::Refusal || (res.tool_calls.is_empty() && looks_like_refusal(&res.text)) {
+            let msg = if res.text.trim().is_empty() {
+                format!("Model {} từ chối yêu cầu này", emp_now.model)
+            } else {
+                format!("Model {} từ chối yêu cầu này: {}", emp_now.model, short(res.text.trim(), 160))
+            };
+            store.log_activity(&emp.id, pid, "error", &msg);
+            return Err(msg);
         }
         messages.push(LlmMessage::Assistant {
             text: res.text.clone(),
@@ -404,10 +536,27 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
             } else {
                 nudges += 1;
                 if nudges > 2 {
-                    // The model keeps answering in prose; accept that as the summary.
+                    if res.text.trim().is_empty() {
+                        return Err(format!("{} không trả lời và không gọi công cụ sau nhiều lần nhắc", emp.name));
+                    }
+                    if matches!(job.phase, "review" | "test") {
+                        return Err(format!(
+                            "{} không gọi công cụ kết thúc ({}) sau nhiều lần nhắc",
+                            emp.name,
+                            if job.phase == "review" { "approve_code / request_changes" } else { "pass_ticket / fail_ticket" }
+                        ));
+                    }
+                    if job.phase == "implement" {
+                        return Err(format!("{} không gọi finish sau nhiều lần nhắc", emp.name));
+                    }
+                    // The model keeps answering in prose on non-code phases; accept that as the summary.
                     return Ok(JobResult { outcome: Outcome::Finish(short(&res.text, 1500)), created_tickets: ctx.created_tickets });
                 }
-                "Hãy tiếp tục bằng tool. Nếu đã xong, gọi tool kết thúc với tóm tắt."
+                if res.text.contains("call:default_api:") {
+                    "LỖI ĐỊNH DẠNG: bạn vừa in chữ 'call:default_api:...' vào văn bản thay vì gọi tool thật. ĐỪNG in chữ đó; hãy gọi trực tiếp tool kết thúc / thao tác bằng cơ chế function calling."
+                } else {
+                    "Hãy tiếp tục bằng tool. Nếu đã xong, gọi tool kết thúc với tóm tắt."
+                }
             };
             messages.push(LlmMessage::User { text: Some(note.into()), tool_results: vec![] });
             continue;
@@ -453,10 +602,47 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
             store.log_activity(&emp.id, pid, if is_error { "error" } else { "result" }, short(&content, 800));
             results.push(ToolResult { id: c.id.clone(), content, is_error, images: vec![] });
         }
-        messages.push(LlmMessage::User { text: None, tool_results: results });
+        let step_num = step + 1;
+        let left = max_steps.saturating_sub(step_num);
+        let budget_hint = if max_steps >= 20 && step_num == (max_steps * 60 / 100) {
+            Some(format!(
+                "[Lưu ý tiến độ: đã dùng {step_num}/{max_steps} bước. Hãy chuyển sang sửa/ghi mã nguồn và chạy test ngay, tránh đọc lặp lại các tệp đã xem.]"
+            ))
+        } else if max_steps >= 15 && left == 10 {
+            Some(format!(
+                "[CẢNH BÁO TIẾN ĐỘ: chỉ còn {left} bước ({step_num}/{max_steps})! Hãy hoàn tất thay đổi cốt lõi, chạy test kiểm chứng và gọi tool kết thúc NGAY.]"
+            ))
+        } else if max_steps >= 15 && left == 4 {
+            Some(format!(
+                "[KHẨN CẤP: chỉ còn {left} bước ({step_num}/{max_steps})! DỪNG đọc thêm tệp và gọi công cụ kết thúc (finish / approve_code / pass_ticket / fail_ticket) NGAY BÂY GIỜ với bằng chứng bạn đã có!]"
+            ))
+        } else {
+            None
+        };
+        messages.push(LlmMessage::User { text: budget_hint, tool_results: results });
         if let Some(outcome) = ctx.outcome.take() {
             return Ok(JobResult { outcome, created_tickets: ctx.created_tickets });
         }
     }
+    // Before failing on step exhaustion, save a structured Harness handoff checkpoint so the next worker continues immediately.
+    if !cancel.is_cancelled() {
+        store.set_runtime(&emp.id, EmpStatus::Thinking, "Lưu checkpoint bàn giao (Harness)", pid, tid);
+        let _ = crate::harness::save_handoff_checkpoint(store, &emp, &project, &dir, tid, &messages, cancel).await;
+    }
     Err(format!("{} vượt quá {max_steps} bước mà chưa xong việc", emp.name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_text_refusals_without_false_positives() {
+        assert!(looks_like_refusal("Sorry, I cannot fulfill this request. I cannot build or test offer_claimer.py..."));
+        assert!(looks_like_refusal("  I'm sorry, I can't assist with injecting Frida scripts."));
+        assert!(looks_like_refusal("Tôi xin lỗi, tôi không thể hỗ trợ can thiệp hệ thống thanh toán."));
+        assert!(!looks_like_refusal("Đã hoàn thành ticket T-1. Toàn bộ unit test đã xanh."));
+        assert!(!looks_like_refusal("Báo cáo: nếu hệ thống từ chối kết nối thì thử lại sau 5 giây."));
+        assert!(!looks_like_refusal(""));
+    }
 }

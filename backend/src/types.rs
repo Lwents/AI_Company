@@ -69,6 +69,12 @@ pub struct Employee {
     pub base_url: String,
     #[serde(default)]
     pub extra_prompt: String,
+    /// Custom skill text / Markdown configured per employee.
+    #[serde(default)]
+    pub skill_text: String,
+    /// Optional path to a `.md` skill file (relative to root / `skills/`, or absolute).
+    #[serde(default)]
+    pub skill_file: String,
     pub color: String,
     #[serde(default = "yes")]
     pub enabled: bool,
