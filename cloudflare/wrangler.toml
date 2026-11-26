@@ -1,0 +1,9 @@
+# Cloudflare Pages: the office UI (web/dist) + Functions that forward /api, /ws, /login and
+# /portal to the backend.   Deploy:  cd cloudflare && npx wrangler pages deploy
+#
+# The backend address is a Pages secret, not stored in git:
+#   npx wrangler pages secret put BACKEND_ORIGIN    (e.g. https://example.com:9443)
+# Use a host name, not an IP: Cloudflare refuses to fetch bare IP addresses.
+name = "aicompany"
+pages_build_output_dir = "../web/dist"
+compatibility_date = "2026-11-01"

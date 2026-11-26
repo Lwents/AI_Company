@@ -88,3 +88,30 @@ jobs:
           SSH="ssh -i $HOME/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes"
           scp -i ~/.ssh/deploy_key -o BatchMode=yes release.tgz deploy/deploy.sh "aico@$HOST:/opt/ai-company/incoming/"
           $SSH "aico@$HOST" 'bash /opt/ai-company/incoming/deploy.sh /opt/ai-company/incoming/release.tgz'
+
+  # Office UI on Cloudflare Pages (aicompany). Skipped until CLOUDFLARE_API_TOKEN is set.
+  pages:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Build UI
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: |
+          npm ci
+          npm run build
+      - name: Deploy to Cloudflare Pages
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        working-directory: cloudflare
+        run: npx -y wrangler@4 pages deploy --branch main --commit-hash "$GITHUB_SHA"
+      - name: No token
+        if: env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "::notice::CLOUDFLARE_API_TOKEN chưa được đặt, bỏ qua bước Cloudflare Pages."

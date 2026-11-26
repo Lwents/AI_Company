@@ -109,16 +109,20 @@ fn client_ip(headers: &HeaderMap) -> String {
     headers.get("x-real-ip").and_then(|v| v.to_str().ok()).map(str::to_string).unwrap_or_else(|| "direct".into())
 }
 
-/// True when the request carries an Origin equal to its own host (same-origin browser request).
+/// True when the request carries an Origin equal to its own host (same-origin browser request),
+/// or one listed in ALLOWED_ORIGINS (the UI on Cloudflare Pages, which proxies to us).
 fn same_origin(headers: &HeaderMap) -> bool {
-    let (Some(origin), Some(host)) = (
-        headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()),
-        headers.get(header::HOST).and_then(|v| v.to_str().ok()),
-    ) else {
-        return false;
-    };
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else { return false };
+    if std::env::var("ALLOWED_ORIGINS").is_ok_and(|list| list.split(',').any(|o| o.trim().trim_end_matches('/') == origin)) {
+        return true;
+    }
+    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else { return false };
     origin == format!("https://{host}") || origin == format!("http://{host}")
 }
+
+/// Marks a preview request served without a session (PREVIEW_PUBLIC=1): internal files are hidden.
+#[derive(Clone, Copy)]
+pub struct PublicPreview;
 
 fn is_public(path: &str) -> bool {
     matches!(path, "/login" | "/api/auth/login" | "/api/auth/logout" | "/api/auth/status")
@@ -128,7 +132,8 @@ fn is_public(path: &str) -> bool {
 pub async fn guard(req: Request, next: Next) -> Response {
     let Some(a) = auth() else { return next.run(req).await };
     let path = req.uri().path().to_string();
-    let headers = req.headers();
+    let headers = req.headers().clone();
+    let headers = &headers;
     let via_proxy = headers.contains_key("x-real-ip");
     let is_ws = headers.get(header::UPGRADE).is_some();
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
@@ -145,6 +150,11 @@ pub async fn guard(req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
     if session_ok(a, headers) {
+        return next.run(req).await;
+    }
+    if req.method() == Method::GET && path.starts_with("/preview/") && std::env::var("PREVIEW_PUBLIC").is_ok_and(|v| v == "1") {
+        let mut req = req;
+        req.extensions_mut().insert(PublicPreview);
         return next.run(req).await;
     }
     if path.starts_with("/api/") || path == "/ws" {

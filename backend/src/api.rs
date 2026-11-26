@@ -533,8 +533,20 @@ async fn public_preview(State(store): State<S>, Path((id, path)): Path<(String, 
     serve_preview(store, id, path).await
 }
 
-async fn preview(State(store): State<S>, Path((id, path)): Path<(String, String)>) -> Response {
+async fn preview(State(store): State<S>, Path((id, path)): Path<(String, String)>, public: Option<axum::Extension<crate::auth::PublicPreview>>) -> Response {
+    if public.is_some() && hidden_from_public_preview(&path) {
+        return (StatusCode::NOT_FOUND, "Không tìm thấy tệp").into_response();
+    }
     serve_preview(store, id, path).await
+}
+
+/// Files a preview opened without login never serves: documents, tests, VCS data, secrets.
+fn hidden_from_public_preview(path: &str) -> bool {
+    let p = path.to_lowercase().replace('\\', "/");
+    const HIDDEN: [&str; 9] = ["docs/", "finance/", "hr/", "sales/", "support/", "legal/notes", "tests/", ".git/", "node_modules/"];
+    HIDDEN.iter().any(|h| p.starts_with(h))
+        || p.split('/').any(|seg| seg.starts_with(".env") || seg == ".git")
+        || (p.ends_with(".md") && !p.starts_with("legal/"))
 }
 
 async fn preview_index(State(store): State<S>, Path(id): Path<String>) -> Response {
@@ -645,4 +657,14 @@ async fn resource_quota(Path((src, id)): Path<(usize, String)>) -> ApiResult {
         return Err(bad("Mã tài khoản không hợp lệ"));
     }
     crate::resources::quota(src, &id).await.map(Json).map_err(|e| (StatusCode::BAD_GATEWAY, e))
+}
+
+#[cfg(test)]
+mod preview_tests {
+    #[test]
+    fn public_preview_hides_internal_files() {
+        use super::hidden_from_public_preview as h;
+        assert!(h("docs/PLAN.md") && h(".git/config") && h("a/.env") && h(".env.local") && h("README.md") && h("node_modules/x.js"));
+        assert!(!h("index.html") && !h("assets/app.js") && !h("design/mockup.html") && !h("legal/terms.md"));
+    }
 }

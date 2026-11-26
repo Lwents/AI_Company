@@ -16,6 +16,11 @@ export async function loadRuntime(): Promise<void> {
   } catch {
     // Offline / old server: keep the local defaults.
   }
+  // UI served statically (e.g. Cloudflare Pages): nothing guards the page itself, so go sign in.
+  if (runtime.enabled && !runtime.user) {
+    location.replace(`/login?next=${encodeURIComponent(location.pathname)}`);
+    await new Promise(() => {});
+  }
 }
 
 /** Link to a project's preview. On a server it lives on its own origin, so generated code cannot call the admin API. */

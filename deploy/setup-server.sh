@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-time server preparation (Ubuntu 24.04), run as root:
 #   HOST=1.2.3.4 CERT=1.2.3.4 DEPLOY_PUBKEY="ssh-ed25519 AAAA…" bash setup-server.sh
+# With the UI on Cloudflare Pages also set UI_ORIGIN=https://name.pages.dev API_HOST=example.com
 # Afterwards: put secrets in /etc/ai-company/env (see env.example) and push to main.
 set -euo pipefail
 
@@ -42,7 +43,11 @@ sudo -u aico -H bash -lc 'cd ~ && npx -y -p @playwright/mcp@0.0.84 playwright in
 install -m 644 "$HERE/ai-company.service" /etc/systemd/system/ai-company.service
 systemctl daemon-reload
 systemctl enable ai-company >/dev/null
-sed -e "s/__HOST__/$HOST/g" -e "s/__CERT__/$CERT/g" "$HERE/nginx-ai-company.conf" > /etc/nginx/sites-available/ai-company
+sed -e "s/__HOST__/$HOST/g" -e "s/__CERT__/$CERT/g" -e "s#__UI_ORIGIN__#${UI_ORIGIN:-}#g" "$HERE/nginx-ai-company.conf" > /etc/nginx/sites-available/ai-company
+# Optional: the same UI/API on a host name (API_HOST, its own certificate), for the Cloudflare Pages proxy.
+if [ -n "${API_HOST:-}" ]; then
+    sed -e "s/__API_HOST__/$API_HOST/g" "$HERE/nginx-ai-company-api.conf" >> /etc/nginx/sites-available/ai-company
+fi
 ln -sf /etc/nginx/sites-available/ai-company /etc/nginx/sites-enabled/ai-company
 nginx -t
 systemctl reload nginx
