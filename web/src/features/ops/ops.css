@@ -17,6 +17,8 @@
   overflow: auto;
 }
 .bubble {
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
   max-width: 88%;
   padding: 5px 9px;
   border: 2px solid var(--line);

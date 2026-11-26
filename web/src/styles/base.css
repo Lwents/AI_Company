@@ -38,9 +38,14 @@ select:focus,
 textarea:focus {
   border-color: var(--accent-hi);
 }
-input[type="checkbox"] {
+input[type="checkbox"],
+input[type="radio"] {
+  /* Not text fields: undo the full-width box styling above. */
   width: 16px;
   height: 16px;
+  padding: 0;
+  box-shadow: none;
+  flex-shrink: 0;
   accent-color: var(--green);
 }
 textarea {

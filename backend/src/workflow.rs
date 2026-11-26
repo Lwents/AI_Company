@@ -8,11 +8,17 @@ use crate::agent::{self, Job};
 use crate::store::{now_ms, S};
 use crate::tools::Outcome;
 use crate::types::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const ABORTED: &str = "aborted";
-const MAX_RELEASE_ROUNDS: u32 = 2;
+const MAX_RELEASE_ROUNDS: u32 = 3;
+/// Whole-product QA passes per round of work (each may send bugs back to Build).
+const MAX_QA_ROUNDS: u32 = 2;
+/// Design reviews per round of work (each may send UI tickets back to Build).
+const MAX_DESIGN_REVIEWS: u32 = 2;
 
 pub(crate) fn handoff(store: &S, pid: &str, from: &str, to: &str, text: impl Into<String>) {
     let text = text.into();
@@ -54,14 +60,39 @@ pub fn start(store: &S, pid: &str) {
     tokio::spawn(async move {
         let r = run_project(&store, &pid, &token).await;
         store.cancels.lock().unwrap().remove(&pid);
-        if let Err(e) = r {
-            if e != ABORTED && !token.is_cancelled() {
-                store.update_project(&pid, |p| {
-                    p.status = ProjectStatus::Failed;
-                    p.error = e.clone();
-                });
-                store.post_message(Some(&pid), "system", "chairman", format!("Dự án gặp lỗi: {e}"), "system");
+        match r {
+            Err(e) if e != ABORTED && !token.is_cancelled() => {
+                let max = store.with(|s| s.settings.auto_retries);
+                let tries = store
+                    .update_project(&pid, |p| {
+                        p.status = ProjectStatus::Failed;
+                        p.error = e.clone();
+                        p.auto_retries
+                    })
+                    .unwrap_or(max);
+                if tries < max {
+                    store.post_message(Some(&pid), "system", "chairman", format!("Dự án gặp sự cố: {e}. Hệ thống sẽ tự chạy lại sau 5 phút (lần {}/{max}).", tries + 1), "system");
+                    let store2 = store.clone();
+                    let pid2 = pid.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(300)).await;
+                        // Only if nobody touched it in the meantime.
+                        let still = store2.project(&pid2).map(|p| p.status == ProjectStatus::Failed).unwrap_or(false);
+                        let running = store2.cancels.lock().unwrap().contains_key(&pid2);
+                        if still && !running {
+                            store2.update_project(&pid2, |p| p.auto_retries += 1);
+                            store2.post_message(Some(&pid2), "system", "chairman", "Tự chạy lại dự án sau sự cố.", "system");
+                            start(&store2, &pid2);
+                        }
+                    });
+                } else {
+                    store.post_message(Some(&pid), "system", "chairman", format!("Dự án gặp lỗi: {e}. Đã tự thử lại {max} lần không được, cần Chủ tịch kiểm tra rồi bấm Tiếp tục."), "system");
+                }
             }
+            Ok(()) => {
+                store.update_project(&pid, |p| p.auto_retries = 0);
+            }
+            _ => {}
         }
         let ids: Vec<String> = store.with(|s| {
             s.runtime.iter().filter(|(_, r)| r.project_id.as_deref() == Some(&pid)).map(|(k, _)| k.clone()).collect()
@@ -83,6 +114,9 @@ pub fn halt(store: &S, pid: &str, status: ProjectStatus) {
 }
 
 async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result<(), String> {
+    if let Some(p) = store.project(pid) {
+        crate::gitflow::prepare(store, &p).await;
+    }
     loop {
         if cancel.is_cancelled() {
             return Err(ABORTED.into());
@@ -122,6 +156,10 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::Report => {
                 phase_report(store, &p, cancel).await?;
+                retrospective(store, &p, cancel).await;
+                crate::gitflow::commit(store, pid, &format!("{}: bàn giao{}", p.name, if p.feedback.is_empty() { String::new() } else { format!(" sau yêu cầu sửa #{}", p.feedback.len()) })).await;
+                let label = if p.feedback.is_empty() { "Bàn giao lần đầu".to_string() } else { format!("Bàn giao sau yêu cầu sửa #{}", p.feedback.len()) };
+                crate::history::snapshot(store, pid, &label).await;
                 store.update_project(pid, |p| {
                     p.phase = Phase::AwaitingApproval;
                     p.status = ProjectStatus::AwaitingApproval;
@@ -138,18 +176,123 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::AwaitingApproval | Phase::Operating | Phase::Done => return Ok(()),
         };
+        crate::gitflow::commit(store, pid, &format!("{}: xong bước {}", p.name, phase_label(p.phase))).await;
         store.update_project(pid, |p| p.phase = next);
     }
 }
 
+fn short_text(s: &str, n: usize) -> String {
+    if s.chars().count() > n { s.chars().take(n).collect::<String>() + "…" } else { s.to_string() }
+}
+
+fn phase_label(p: Phase) -> &'static str {
+    match p {
+        Phase::Plan => "khởi động",
+        Phase::Requirements => "yêu cầu",
+        Phase::Planning => "kế hoạch sprint",
+        Phase::Design => "thiết kế",
+        Phase::Architecture => "kiến trúc",
+        Phase::Build => "lập trình",
+        Phase::Release => "phát hành",
+        Phase::Report => "báo cáo",
+        _ => "khác",
+    }
+}
+
 fn revision_note(p: &Project) -> String {
-    match p.feedback.last() {
+    let existing = if p.existing {
+        "\n\nLƯU Ý: dự án được xây trên MÃ NGUỒN CÓ SẴN của khách hàng (xem docs/EXISTING-CODE.md). Không viết lại từ đầu: giữ công nghệ, cấu trúc và phong cách code hiện có, thay đổi tối thiểu và đúng chỗ cho yêu cầu; chuẩn cấu trúc của công ty áp dụng cho phần code mới và cải tiến dần, không đập đi xây lại. Không làm hỏng tính năng đang chạy."
+    } else {
+        ""
+    };
+    existing.to_string() + &match p.feedback.last() {
         Some(fb) => format!(
             "\n\nĐÂY LÀ VÒNG SỬA ĐỔI {}. Chủ tịch yêu cầu thay đổi:\n{fb}\nSản phẩm và tài liệu cũ đã có trong thư mục dự án; chỉ làm phần cần thay đổi.",
             p.feedback.len()
         ),
         None => String::new(),
     }
+}
+
+/// The project's non-negotiable principles (Spec-Driven Development "constitution"). Updated on revisions.
+async fn write_constitution(store: &S, p: &Project, ceo: &Employee, cancel: &CancellationToken) -> Result<(), String> {
+    let exists = store.dir_of(p).join("docs").join("CONSTITUTION.md").is_file();
+    if exists && p.feedback.is_empty() {
+        return Ok(());
+    }
+    let task = format!(
+        "{} docs/CONSTITUTION.md — NGUYÊN TẮC BẤT DI BẤT DỊCH của dự án \"{}\", rút ra từ yêu cầu của khách, docs/TECH-CHOICE.md, docs/PLAN.md và docs/DECISIONS.md. 5–10 nguyên tắc, mỗi nguyên tắc: tên ngắn, nội dung bằng chữ PHẢI / KHÔNG ĐƯỢC, lý do một câu, cách kiểm tra là đã tuân thủ. Ví dụ loại nguyên tắc: phạm vi công nghệ, ưu tiên thiết bị, dữ liệu và quyền riêng tư, chất lượng / kiểm thử bắt buộc, hiệu năng, khả năng truy cập, cấu trúc module. Chỉ ghi điều thật sự không được vi phạm, không lặp lại kế hoạch. Mọi nhân viên sẽ đọc tệp này ở mọi bước. Xong gọi finish.{}",
+        if exists { "Cập nhật (nếu yêu cầu sửa đổi làm thay đổi nguyên tắc)" } else { "Viết" },
+        p.name,
+        revision_note(p)
+    );
+    agent::run(store, Job { employee_id: ceo.id.clone(), project_id: p.id.clone(), phase: "plan", ticket_id: None, case_id: None, task }, cancel).await?;
+    Ok(())
+}
+
+/// The BA finds the ambiguities that matter and asks the customer once (Spec Kit "clarify").
+/// Returns the file holding the answers.
+async fn clarify(store: &S, p: &Project, ba: &Employee, cancel: &CancellationToken) -> Result<String, String> {
+    let file = if p.feedback.is_empty() { "docs/CLARIFICATIONS.md".to_string() } else { format!("docs/CLARIFICATIONS-sua-{}.md", p.feedback.len()) };
+    if store.dir_of(p).join(&file).is_file() {
+        return Ok(file);
+    }
+    let task = format!(
+        "Trước khi viết đặc tả yêu cầu: đọc yêu cầu của khách, docs/PLAN.md, docs/DECISIONS.md, docs/CONSTITUTION.md và tìm các điểm MƠ HỒ ảnh hưởng lớn tới phạm vi, dữ liệu, trải nghiệm hoặc nghiệm thu (vd. có cần đăng nhập không, ai dùng, bao nhiêu dữ liệu, quy tắc tính toán, xử lý khi lỗi). Chọn TỐI ĐA 5 câu quan trọng nhất (bỏ qua chi tiết nhỏ có thể tự quyết hợp lý).\nNếu có câu cần hỏi: gọi ask_chairman ĐÚNG MỘT LẦN, đánh số từng câu, viết dễ hiểu cho người không rành kỹ thuật, mỗi câu kèm 2–3 lựa chọn gợi ý và \"Đề xuất: …\" để khách chỉ cần trả lời ngắn (vd. \"1A, 2 theo đề xuất\").\nGhi {file}: từng câu hỏi, câu trả lời của khách (hoặc \"theo đề xuất\" khi khách không trả lời / đồng ý đề xuất), và những giả định bạn tự quyết. Nếu không có điểm mơ hồ đáng kể thì không hỏi, chỉ ghi các giả định. Xong gọi finish.{}",
+        revision_note(p)
+    );
+    agent::run(store, Job { employee_id: ba.id.clone(), project_id: p.id.clone(), phase: "clarify", ticket_id: None, case_id: None, task }, cancel).await?;
+    Ok(file)
+}
+
+/// Cross-checks requirements ↔ plan ↔ architecture ↔ tickets before any code is written (Spec Kit "analyze").
+async fn analyze(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
+    let Some(ba) = first(store, &[Role::Ba, Role::Pm, Role::Architect]) else { return Ok(()) };
+    let task = format!(
+        "KIỂM TRA NHẤT QUÁN trước khi bắt đầu lập trình. Đọc docs/CONSTITUTION.md, docs/REQUIREMENTS.md, docs/PLAN.md, docs/ARCHITECTURE.md, docs/DATA.md, docs/DESIGN.md (nếu có) và danh sách ticket:\n{}\nViết docs/ANALYSIS.md:\n1. Bảng phủ: mỗi FR / user story → ticket nào làm (đánh dấu FR chưa có ticket).\n2. Ticket không gắn với yêu cầu nào (thừa).\n3. Mâu thuẫn giữa các tài liệu (thuật ngữ, dữ liệu, luồng, công nghệ).\n4. Vi phạm CONSTITUTION.\n5. Yêu cầu mơ hồ / không kiểm thử được.\nMỗi vấn đề ghi mức độ (Nghiêm trọng / Cao / Trung bình / Thấp). Với FR chưa có ticket hoặc vấn đề Nghiêm trọng / Cao: gọi create_ticket để bổ sung (đúng một module, ghi mã FR). Không sửa tài liệu của người khác. Xong gọi finish với tóm tắt số vấn đề theo mức độ.{}",
+        ticket_list(store, &p.id),
+        revision_note(p)
+    );
+    let r = agent::run(store, Job { employee_id: ba.id.clone(), project_id: p.id.clone(), phase: "analyze", ticket_id: None, case_id: None, task }, cancel).await?;
+    store.post_message(Some(&p.id), &ba.id, "all", format!("Kiểm tra nhất quán trước khi code: {}{}", summary_of(&r.outcome), if r.created_tickets > 0 { format!(" (bổ sung {} ticket)", r.created_tickets) } else { String::new() }), "chat");
+    Ok(())
+}
+
+/// The PM consults the customer (who is not technical) and agrees on the technology, once per project.
+async fn consult_tech(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
+    let doc = store.dir_of(p).join("docs").join("TECH-CHOICE.md");
+    if !p.tech.trim().is_empty() || p.existing || !p.feedback.is_empty() || doc.is_file() {
+        return Ok(());
+    }
+    let Some(pm) = first(store, &[Role::Pm, Role::Ceo]) else { return Ok(()) };
+    if let Some(ceo) = first(store, &[Role::Ceo]).filter(|c| c.id != pm.id) {
+        handoff(store, &p.id, &ceo.id, &pm.id, "Nhờ PM tư vấn và thống nhất công nghệ với khách hàng.");
+    }
+    let task = format!(
+        "Khách hàng (Chủ tịch) đặt dự án:\n{}\n\nKhách hàng KHÔNG rành công nghệ. Với vai trò PM, hãy tư vấn và chốt công nghệ với khách:\n1. Tự phân tích yêu cầu và chọn 2–3 phương án công nghệ phù hợp (tra tài liệu mới nhất nếu có công cụ). Hướng chung của công ty: {}\n2. Gọi ask_chairman ĐÚNG MỘT LẦN. Viết cho người không biết kỹ thuật: mỗi phương án đặt tên dễ hiểu (vd. \"Phương án A — Ứng dụng web chạy trên trình duyệt\"), nói ý nghĩa thực tế với khách: dùng trên thiết bị nào, có cần tài khoản / máy chủ không, chi phí vận hành hằng tháng ước tính, thời gian làm, sau này mở rộng / sửa có dễ không, ưu / nhược. Ghi rõ phương án bạn ĐỀ XUẤT và vì sao. Tên công nghệ chỉ để trong ngoặc, không dùng thuật ngữ khó.\n3. Ghi docs/TECH-CHOICE.md: các phương án đã đưa, khách chọn gì (hoặc nếu khách không trả lời: dùng phương án đề xuất và ghi rõ là giả định), công nghệ cụ thể và phiên bản sẽ dùng cho đội kỹ thuật.\nXong gọi finish với tóm tắt lựa chọn.",
+        p.request,
+        crate::config::TECH_GUIDE
+    );
+    agent::run(store, Job { employee_id: pm.id.clone(), project_id: p.id.clone(), phase: "consult", ticket_id: None, case_id: None, task }, cancel).await?;
+    store.post_message(Some(&p.id), &pm.id, "all", "Đã thống nhất công nghệ với khách hàng, xem docs/TECH-CHOICE.md.", "chat");
+    Ok(())
+}
+
+/// For a customer's existing codebase: the Tech Lead studies it before the kickoff (once).
+async fn onboard_existing(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
+    let doc = store.dir_of(p).join("docs").join("EXISTING-CODE.md");
+    if !p.existing || doc.is_file() {
+        return Ok(());
+    }
+    let Some(lead) = first(store, &[Role::Architect, Role::Dev, Role::Ceo]) else { return Ok(()) };
+    store.post_message(Some(&p.id), &lead.id, "all", format!("Đang đọc hiểu mã nguồn khách gửi ({}).", p.source), "chat");
+    let task = format!(
+        "Khách hàng gửi MÃ NGUỒN CÓ SẴN (nguồn: {}) để công ty sửa / nâng cấp theo yêu cầu:\n{}\n\nTrước khi họp khởi động, hãy đọc hiểu codebase (list_files, README, tệp cấu hình như package.json, điểm vào, các thư mục chính — đọc có chọn lọc). Nếu có thể, thử cài đặt / chạy test / build để biết hiện trạng. Viết docs/EXISTING-CODE.md: công nghệ và phiên bản; cách cài, chạy, test, build; cây thư mục và vai trò từng phần; các trang / module / luồng chính; mô hình dữ liệu và lưu trữ; chất lượng code, nợ kỹ thuật, lỗi / rủi ro thấy được; những chỗ cần đụng tới để đáp ứng yêu cầu của khách; đề xuất cách sửa an toàn. Không sửa code ở bước này. Xong gọi finish với tóm tắt hiện trạng.",
+        p.source,
+        p.request
+    );
+    agent::run(store, Job { employee_id: lead.id.clone(), project_id: p.id.clone(), phase: "onboarding", ticket_id: None, case_id: None, task }, cancel).await?;
+    Ok(())
 }
 
 fn ticket_list(store: &S, pid: &str) -> String {
@@ -194,6 +337,14 @@ async fn phase_plan(store: &S, p: &Project, cancel: &CancellationToken) -> Resul
     let all = everyone(store);
     store.post_message(Some(&p.id), "chairman", &ceo.id, if p.feedback.is_empty() { p.request.clone() } else { p.feedback.last().cloned().unwrap_or_default() }, "chat");
     meeting(store, &p.id, all.clone(), "Họp khởi động", true);
+    if let Err(e) = consult_tech(store, p, cancel).await {
+        meeting(store, &p.id, all, "", false);
+        return Err(e);
+    }
+    if let Err(e) = onboard_existing(store, p, cancel).await {
+        meeting(store, &p.id, all, "", false);
+        return Err(e);
+    }
     let r = match kickoff(store, p, &ceo, &all, cancel).await {
         Ok(r) => r,
         Err(e) => {
@@ -201,6 +352,10 @@ async fn phase_plan(store: &S, p: &Project, cancel: &CancellationToken) -> Resul
             return Err(e);
         }
     };
+    if let Err(e) = write_constitution(store, p, &ceo, cancel).await {
+        meeting(store, &p.id, all, "", false);
+        return Err(e);
+    }
     meeting(store, &p.id, all.clone(), "Họp khởi động", true);
     let minutes_result = minutes(store, p, "Họp khởi động", "docs/PLAN.md, docs/DECISIONS.md (nếu có) và các ý kiến trong docs/meetings/", cancel).await;
     meeting(store, &p.id, all, "", false);
@@ -214,10 +369,12 @@ async fn phase_plan(store: &S, p: &Project, cancel: &CancellationToken) -> Resul
 
 /// One person per department speaks at the kickoff discussion.
 fn discussion_panel(store: &S) -> Vec<Employee> {
-    const ROLES: [Role; 12] = [
+    const ROLES: [Role; 14] = [
         Role::Ba,
         Role::Pm,
         Role::Architect,
+        Role::DataEngineer,
+        Role::Security,
         Role::Designer,
         Role::Dev,
         Role::Reviewer,
@@ -236,19 +393,31 @@ async fn kickoff(store: &S, p: &Project, ceo: &Employee, all: &[String], cancel:
     let panel = if rounds == 0 { vec![] } else { discussion_panel(store) };
     let dir = if p.feedback.is_empty() { "docs/meetings/kickoff".to_string() } else { format!("docs/meetings/kickoff-sua-{}", p.feedback.len()) };
     // Resumable: whatever is already written to disk (opinions, ballot, votes) is not redone after a restart.
-    let pdir = store.workspace_dir.join(&p.slug);
+    let pdir = store.dir_of(p);
     let has = |rel: &str| std::fs::metadata(pdir.join(rel)).map(|m| m.len() > 0).unwrap_or(false);
     let started = !panel.is_empty()
         && std::fs::read_dir(pdir.join(&dir)).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("v1-"))).unwrap_or(false);
 
     // 1. The CEO drafts.
+    let tech_step = if !p.tech.trim().is_empty() {
+        format!("CÔNG NGHỆ: Chủ tịch đã chỉ định \"{}\". Bắt buộc dùng, ghi rõ vào PLAN.md.", p.tech.trim())
+    } else if p.existing {
+        "CÔNG NGHỆ: giữ công nghệ của mã nguồn có sẵn (docs/EXISTING-CODE.md); chỉ thêm thư viện mới khi thật cần và nêu lý do. Đọc docs/EXISTING-CODE.md trước khi viết kế hoạch.".to_string()
+    } else if p.feedback.is_empty() {
+        format!(
+            "CÔNG NGHỆ: PM đã tư vấn và thống nhất với khách hàng trong docs/TECH-CHOICE.md — đọc và dùng đúng lựa chọn đó, ghi vào PLAN.md. Nếu tệp không có, chọn theo hướng công ty ({}) và ghi rõ là giả định.",
+            crate::config::TECH_GUIDE
+        )
+    } else {
+        "CÔNG NGHỆ: giữ công nghệ đã chốt trong docs/PLAN.md, chỉ đổi khi Chủ tịch yêu cầu.".to_string()
+    };
     let draft_note = if panel.is_empty() {
         ""
     } else {
         " Đây là BẢN NHÁP để đưa ra cuộc họp: các trưởng bộ phận sẽ góp ý và phản biện trước khi bạn chốt, nên hãy nêu rõ các phương án bạn còn phân vân."
     };
     let task = format!(
-        "Chủ tịch giao dự án \"{}\":\n{}{}\n\nViệc của bạn: phân tích yêu cầu và viết kế hoạch ngắn gọn vào docs/PLAN.md (mục tiêu, phạm vi, công nghệ gợi ý — ưu tiên thứ đơn giản chạy ngay, các hạng mục chính, ai trong công ty làm gì).{draft_note} Chỉ hỏi Chủ tịch (ask_chairman) khi thật sự không thể tự quyết. Xong gọi finish.",
+        "Chủ tịch giao dự án \"{}\":\n{}{}\n\nViệc của bạn: phân tích yêu cầu và viết kế hoạch ngắn gọn vào docs/PLAN.md (mục tiêu, phạm vi, công nghệ, danh sách trang / module chính, ai trong công ty làm gì).{draft_note}\n\n{tech_step}\n\nNgoài việc chọn công nghệ, chỉ hỏi Chủ tịch (ask_chairman) khi thật sự không thể tự quyết. Xong gọi finish.",
         p.name,
         p.request,
         revision_note(p)
@@ -280,7 +449,7 @@ async fn kickoff(store: &S, p: &Project, ceo: &Employee, all: &[String], cancel:
             let role = crate::config::role_label(emp.role);
             let task = if round == 1 {
                 format!(
-                    "Cuộc họp khởi động dự án \"{}\". Yêu cầu của Chủ tịch:\n{}\n\nCEO đã đưa bản nháp kế hoạch ở docs/PLAN.md. Với góc nhìn chuyên môn của {role}, đọc kế hoạch rồi viết ý kiến vào {file}:\n1. Điểm bạn đồng ý.\n2. Rủi ro / vấn đề bạn thấy (cụ thể, có lý do).\n3. Đề xuất để tối ưu: đơn giản hơn, nhanh hơn, rẻ hơn hoặc chất lượng hơn.\n4. Phương án thay thế nếu bạn không đồng ý với hướng đi.\n5. Phần việc của bạn: cần gì, ước lượng công sức.\nThẳng thắn, có lập luận — không khen xã giao, không chép lại kế hoạch. Ngắn gọn, khoảng một trang, gạch đầu dòng, viết trọn câu — ghi một lần là xong, không cần đếm chữ hay sửa đi sửa lại. Chỉ ghi đúng tệp này, không sửa tệp khác. Xong gọi finish với tóm tắt 1–2 câu ý kiến chính của bạn.",
+                    "Cuộc họp khởi động dự án \"{}\". Yêu cầu của Chủ tịch:\n{}\n\nCEO đã đưa bản nháp kế hoạch ở docs/PLAN.md. Với góc nhìn chuyên môn của {role}, đọc kế hoạch rồi viết ý kiến vào {file}:\n1. Điểm bạn đồng ý.\n2. Rủi ro / vấn đề bạn thấy (cụ thể, có lý do).\n3. Đề xuất để tối ưu: đơn giản hơn, nhanh hơn, rẻ hơn hoặc chất lượng hơn.\n4. Phương án thay thế nếu bạn không đồng ý với hướng đi.\n5. Phần việc của bạn: cần gì, ước lượng công sức.\nCông nghệ do Chủ tịch chọn trong PLAN.md là cố định (chỉ góp ý cách dùng). Góp ý cả cách chia trang / module cho dễ nâng cấp. Thẳng thắn, có lập luận — không khen xã giao, không chép lại kế hoạch. Ngắn gọn, khoảng một trang, gạch đầu dòng, viết trọn câu — ghi một lần là xong, không cần đếm chữ hay sửa đi sửa lại. Chỉ ghi đúng tệp này, không sửa tệp khác. Xong gọi finish với tóm tắt 1–2 câu ý kiến chính của bạn.",
                     p.name, p.request
                 )
             } else {
@@ -336,7 +505,7 @@ async fn kickoff(store: &S, p: &Project, ceo: &Employee, all: &[String], cancel:
     meeting(store, &p.id, voter_ids.clone(), "Họp khởi động · lập phiếu bầu", true);
     let ballot_file = format!("{dir}/BALLOT.md");
     let task = format!(
-        "Bạn chủ trì cuộc họp khởi động dự án \"{}\". Đọc docs/PLAN.md và toàn bộ ý kiến, phản biện trong {dir}/. Tổng hợp các vấn đề còn tranh cãi hoặc có nhiều cách làm (tối đa 6 vấn đề quan trọng nhất) thành phiếu bầu, ghi vào {ballot_file} ĐÚNG định dạng sau:\n\n## V1: <vấn đề cần quyết>\n- A: <phương án> (đề xuất bởi <vai trò>)\n- B: <phương án> (đề xuất bởi <vai trò>)\n\n## V2: ...\n\nMỗi vấn đề 2–4 phương án, trình bày công bằng, ghi kèm ưu/nhược ngắn gọn của từng phương án ngay trên dòng đó. Không tự quyết ở bước này. Nếu mọi người đã đồng thuận hết thì ghi tệp chỉ với dòng \"Không có vấn đề cần bỏ phiếu\". Xong gọi finish.",
+        "Bạn chủ trì cuộc họp khởi động dự án \"{}\". Đọc docs/PLAN.md và toàn bộ ý kiến, phản biện trong {dir}/. Tổng hợp các vấn đề còn tranh cãi hoặc có nhiều cách làm (tối đa 6 vấn đề quan trọng nhất) thành phiếu bầu, ghi vào {ballot_file} ĐÚNG định dạng sau:\n\n## V1: <vấn đề cần quyết>\n- A: <phương án> (đề xuất bởi <vai trò>)\n- B: <phương án> (đề xuất bởi <vai trò>)\n\n## V2: ...\n\nKhông đưa lựa chọn công nghệ của Chủ tịch ra bỏ phiếu. Mỗi vấn đề 2–4 phương án, trình bày công bằng, ghi kèm ưu/nhược ngắn gọn của từng phương án ngay trên dòng đó. Không tự quyết ở bước này. Nếu mọi người đã đồng thuận hết thì ghi tệp chỉ với dòng \"Không có vấn đề cần bỏ phiếu\". Xong gọi finish.",
         p.name
     );
     if !has(&ballot_file) {
@@ -488,8 +657,9 @@ fn tally(issues: &[(String, String, Vec<(char, String)>)], ballots: &[(Employee,
 
 async fn phase_requirements(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
     let ba = first(store, &[Role::Ba, Role::Pm, Role::Ceo]).ok_or("Không có ai viết yêu cầu (BA/PM/CEO)")?;
+    let clar = clarify(store, p, &ba, cancel).await?;
     let task = format!(
-        "Đọc docs/PLAN.md. Viết docs/REQUIREMENTS.md gồm user story và tiêu chí nghiệm thu. Sau đó tạo ticket bằng create_ticket: 2–6 ticket nhỏ, làm được độc lập, theo thứ tự nên làm, mỗi ticket có tiêu chí nghiệm thu kiểm tra được. Xong gọi finish.{}",
+        "Đọc docs/PLAN.md, docs/DECISIONS.md, docs/CONSTITUTION.md và {clar} (câu trả lời làm rõ của khách — bắt buộc tuân theo). Viết docs/REQUIREMENTS.md theo MẪU ĐẶC TẢ CHUẨN:\n1. User story theo độ ưu tiên (P1 = bắt buộc cho bản đầu, P2, P3); mỗi story kiểm thử độc lập được, ghi \"Vì sao ưu tiên này\".\n2. Kịch bản nghiệm thu dạng Cho trước / Khi / Thì (Given / When / Then) cho từng story.\n3. Ca biên (edge cases).\n4. Yêu cầu chức năng đánh mã FR-001, FR-002… (mỗi yêu cầu một câu \"Hệ thống PHẢI …\", kiểm thử được, không mô tả cách làm kỹ thuật).\n5. Thực thể dữ liệu chính (nếu có).\n6. Tiêu chí thành công ĐO ĐƯỢC SC-001… (vd. \"người dùng ghi một khoản chi trong dưới 10 giây\"), không phụ thuộc công nghệ.\n7. Giả định và ngoài phạm vi.\nChia theo trang / module. Sau đó tạo ticket bằng create_ticket: 2–8 ticket nhỏ, MỖI TICKET THUỘC ĐÚNG MỘT TRANG HOẶC MỘT MODULE (ghi tên ở đầu tiêu đề, vd. \"[module giao-dich] Thêm / sửa / xóa giao dịch\"), ghi rõ các mã FR mà ticket đáp ứng trong mô tả, làm được độc lập, theo thứ tự nên làm, tiêu chí nghiệm thu kiểm tra được. Mọi FR phải thuộc ít nhất một ticket. Xong gọi finish.{}",
         revision_note(p)
     );
     let r = agent::run(store, Job { employee_id: ba.id.clone(), project_id: p.id.clone(), phase: "requirements", ticket_id: None, case_id: None, task }, cancel).await?;
@@ -540,10 +710,53 @@ async fn phase_design(store: &S, p: &Project, cancel: &CancellationToken) -> Res
         handoff(store, &p.id, &from.id, &designer.id, "Yêu cầu đã chốt, nhờ thiết kế giao diện.");
     }
     let task = format!(
-        "Đọc docs/PLAN.md và docs/REQUIREMENTS.md. Viết docs/DESIGN.md: phong cách, bảng màu (mã hex), font, khoảng cách, bố cục từng màn hình, các thành phần giao diện và trạng thái (hover, lỗi, trống). Tạo design/tokens.css chứa biến CSS (màu, font, bo góc, khoảng cách) để Dev dùng lại. Xong gọi finish.{}",
+        "Đọc docs/PLAN.md, docs/DECISIONS.md và docs/REQUIREMENTS.md. Thiết kế giao diện ĐẸP, hiện đại, chuyên nghiệp theo kỹ năng Designer của bạn:\n- docs/DESIGN.md: phong cách, hệ màu (mã hex, có tương phản đạt WCAG AA), font hỗ trợ tiếng Việt, thang cỡ chữ, thang khoảng cách, bo góc, bóng đổ, bố cục từng trang (desktop và điện thoại), từng thành phần với đủ trạng thái (hover, focus, disabled, loading, rỗng, lỗi).\n- design/tokens.css: toàn bộ biến CSS để Dev dùng lại (nguồn duy nhất).\n- design/mockup.html: bản mẫu tĩnh tự chứa (import ./tokens.css) thể hiện các trang chính và trạng thái quan trọng.\nNếu có công cụ trình duyệt: mở {}design/mockup.html, chụp màn hình ở 1280px và 375px, tự soi và sửa tới khi đẹp, cân đối, không lỗi. Xong gọi finish.{}",
+        crate::config::preview_url(&p.id),
         revision_note(p)
     );
     agent::run(store, Job { employee_id: designer.id.clone(), project_id: p.id.clone(), phase: "design", ticket_id: None, case_id: None, task }, cancel).await?;
+    approve_design(store, p, &designer, cancel).await
+}
+
+/// The chairman (customer) looks at the mockup before anything is built; up to 2 rounds of changes.
+async fn approve_design(store: &S, p: &Project, designer: &Employee, cancel: &CancellationToken) -> Result<(), String> {
+    if !store.with(|s| s.settings.approve_design) || !store.dir_of(p).join("design").join("mockup.html").is_file() {
+        return Ok(());
+    }
+    let url = format!("{}design/mockup.html", crate::config::preview_url(&p.id));
+    for round in 1..=3 {
+        store.set_runtime(&designer.id, EmpStatus::Waiting, "Chờ Chủ tịch duyệt thiết kế", Some(&p.id), None);
+        let a = store
+            .request_approval(
+                Some(&p.id),
+                &designer.id,
+                ApprovalKind::Question,
+                format!("Duyệt bản thiết kế giao diện \"{}\"", p.name),
+                format!("Mời anh/chị xem bản mẫu giao diện: {url}\n\nĐồng ý: bấm Trả lời và ghi \"ok\". Muốn sửa: ghi góp ý cụ thể (màu sắc, bố cục, chữ, thêm / bớt gì…)."),
+                cancel,
+            )
+            .await?;
+        store.set_runtime(&designer.id, EmpStatus::Idle, "", None, None);
+        let ans = a.answer.unwrap_or_default();
+        let t = ans.trim().to_lowercase();
+        let ok = a.status == ApprovalStatus::Approved
+            || t.is_empty() && a.status == ApprovalStatus::Answered
+            || ["ok", "oke", "okay", "đồng ý", "duyệt", "được", "đẹp", "chốt", "yes"].iter().any(|w| t == *w || t.starts_with(&format!("{w} ")) || t.starts_with(&format!("{w},")) || t.starts_with(&format!("{w}.")));
+        if ok {
+            store.post_message(Some(&p.id), "chairman", &designer.id, "Duyệt bản thiết kế.", "chat");
+            return Ok(());
+        }
+        if round == 3 {
+            break;
+        }
+        let feedback = if t.is_empty() { "Chủ tịch chưa ưng bản thiết kế, hãy đề xuất hướng khác đẹp và chuyên nghiệp hơn.".to_string() } else { ans.trim().to_string() };
+        store.post_message(Some(&p.id), "chairman", &designer.id, format!("Góp ý thiết kế: {feedback}"), "chat");
+        let task = format!(
+            "Chủ tịch (khách hàng) góp ý bản thiết kế:\n{feedback}\n\nSửa docs/DESIGN.md, design/tokens.css và design/mockup.html theo góp ý (giữ những gì khách không nhắc tới). Mở lại {url} bằng trình duyệt nếu có công cụ để kiểm tra. Xong gọi finish với tóm tắt đã sửa gì."
+        );
+        agent::run(store, Job { employee_id: designer.id.clone(), project_id: p.id.clone(), phase: "design", ticket_id: None, case_id: None, task }, cancel).await?;
+    }
+    store.post_message(Some(&p.id), &designer.id, "chairman", "Đã sửa thiết kế theo góp ý 2 lần; đội tiếp tục với bản hiện tại, anh/chị có thể yêu cầu sửa thêm khi duyệt sản phẩm.", "chat");
     Ok(())
 }
 
@@ -553,10 +766,25 @@ async fn phase_architecture(store: &S, p: &Project, cancel: &CancellationToken) 
         handoff(store, &p.id, &from.id, &lead.id, "Yêu cầu và thiết kế đã sẵn sàng, nhờ anh/chị thiết kế kiến trúc.");
     }
     let task = format!(
-        "Đọc docs/PLAN.md, docs/REQUIREMENTS.md (và docs/DESIGN.md nếu có). Viết docs/ARCHITECTURE.md: công nghệ, cấu trúc thư mục, quy ước code, cách chạy. Có thể tạo thêm ticket kỹ thuật (vd. khởi tạo dự án) nếu cần. Xong gọi finish.{}",
+        "Đọc docs/PLAN.md, docs/DECISIONS.md, docs/REQUIREMENTS.md (và docs/DESIGN.md nếu có).\n\n{}\n\nCông nghệ: dùng đúng công nghệ đã chốt trong PLAN.md (lựa chọn của Chủ tịch). Tuân thủ docs/CONSTITUTION.md và ghi mục \"Kiểm tra Constitution\" (từng nguyên tắc: đạt / lý do) trong ARCHITECTURE.md. Viết docs/ARCHITECTURE.md: công nghệ và phiên bản, cây thư mục cụ thể của dự án này theo đúng chuẩn trên, BẢNG DANH SÁCH TRANG / MODULE (tên, trách nhiệm, API công khai, phụ thuộc), quy tắc phụ thuộc, quy ước code, cách chạy / test / build, và hướng dẫn \"thêm một trang / module mới\" từng bước. Viết docs/modules/<ten-module>.md cho từng module. Ghi mỗi quyết định kiến trúc quan trọng thành một ADR trong docs/adr/. Tạo ticket kỹ thuật đầu tiên \"Khởi tạo khung dự án theo chuẩn công ty\" (thư mục, README, CHANGELOG, .gitignore, .editorconfig, CI) và các ticket kỹ thuật khác nếu cần. Xong gọi finish.{}",
+        crate::config::REPO_STANDARD,
         revision_note(p)
     );
     agent::run(store, Job { employee_id: lead.id.clone(), project_id: p.id.clone(), phase: "architecture", ticket_id: None, case_id: None, task }, cancel).await?;
+    phase_data(store, p, &lead, cancel).await?;
+    analyze(store, p, cancel).await
+}
+
+/// The Data Engineer designs the data layer right after the architecture (skipped if there is none).
+async fn phase_data(store: &S, p: &Project, lead: &Employee, cancel: &CancellationToken) -> Result<(), String> {
+    let Some(de) = first(store, &[Role::DataEngineer]) else { return Ok(()) };
+    handoff(store, &p.id, &lead.id, &de.id, "Kiến trúc đã xong, nhờ thiết kế tầng dữ liệu.");
+    let task = format!(
+        "Đọc docs/PLAN.md, docs/DECISIONS.md, docs/REQUIREMENTS.md, docs/ARCHITECTURE.md.\n\n{}\n\nViệc của bạn (Data Engineer): viết docs/DATA.md gồm\n- Mô hình dữ liệu: từng thực thể, trường, kiểu, bắt buộc/tùy chọn, ràng buộc, quan hệ, ví dụ JSON.\n- Lưu trữ: ở đâu, khóa, giới hạn dung lượng, xử lý khi dữ liệu hỏng.\n- Phiên bản schema và cách chuyển đổi dữ liệu cũ khi nâng cấp (migration).\n- Sao lưu / khôi phục / xuất dữ liệu; bảo vệ dữ liệu cá nhân.\n- Các chỉ số sản phẩm nên đo (nếu phù hợp) và cách tính.\nTạo data/schema/ (định nghĩa schema, vd. JSON Schema), data/migrations/ (nếu cần) và data/seeds/ (dữ liệu mẫu). Nếu phần dữ liệu cần code thì tạo ticket kỹ thuật bằng create_ticket với tiêu chí nghiệm thu rõ ràng. Không viết code giao diện. Xong gọi finish.{}",
+        crate::config::REPO_STANDARD,
+        revision_note(p)
+    );
+    agent::run(store, Job { employee_id: de.id.clone(), project_id: p.id.clone(), phase: "architecture", ticket_id: None, case_id: None, task }, cancel).await?;
     Ok(())
 }
 
@@ -601,18 +829,32 @@ async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Resu
     run_dev_workers(store, &p.id, cancel).await
 }
 
+struct CounterGuard(Arc<AtomicUsize>);
+impl Drop for CounterGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// All devs work through the open tickets of a project in parallel until none are left.
 pub(crate) async fn run_dev_workers(store: &S, pid: &str, cancel: &CancellationToken) -> Result<(), String> {
     let devs = store.staff(Role::Dev);
     if devs.is_empty() {
         return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
     }
+    let alive = Arc::new(AtomicUsize::new(devs.len()));
+    let busy = Arc::new(AtomicUsize::new(0));
     let mut handles = vec![];
     for d in devs {
         let store = store.clone();
         let pid = pid.to_string();
         let cancel = cancel.clone();
-        handles.push(tokio::spawn(async move { dev_worker(&store, &pid, &d.id, &cancel).await }));
+        let alive = alive.clone();
+        let busy = busy.clone();
+        handles.push(tokio::spawn(async move {
+            let _alive_guard = CounterGuard(alive.clone());
+            dev_worker(&store, &pid, &d.id, &cancel, &alive, &busy).await
+        }));
     }
     let mut first_err = None;
     for h in handles {
@@ -629,7 +871,7 @@ pub(crate) async fn run_dev_workers(store: &S, pid: &str, cancel: &CancellationT
     }
 }
 
-async fn dev_worker(store: &S, pid: &str, dev_id: &str, cancel: &CancellationToken) -> Result<(), String> {
+async fn dev_worker(store: &S, pid: &str, dev_id: &str, cancel: &CancellationToken, alive: &Arc<AtomicUsize>, busy: &Arc<AtomicUsize>) -> Result<(), String> {
     loop {
         if cancel.is_cancelled() {
             return Err(ABORTED.into());
@@ -647,6 +889,8 @@ async fn dev_worker(store: &S, pid: &str, dev_id: &str, cancel: &CancellationTok
         });
         match picked {
             Some(tid) => {
+                busy.fetch_add(1, Ordering::SeqCst);
+                let _busy_guard = CounterGuard(busy.clone());
                 store.update_ticket(&tid, |t| {
                     t.status = TicketStatus::InProgress;
                     t.assignee = Some(dev_id.to_string());
@@ -654,8 +898,14 @@ async fn dev_worker(store: &S, pid: &str, dev_id: &str, cancel: &CancellationTok
                 process_ticket(store, pid, dev_id, &tid, cancel).await?;
             }
             None => {
-                let open = store.tickets_of(pid).iter().any(|t| is_open(t.status));
-                if !open {
+                let tickets = store.tickets_of(pid);
+                let has_open = tickets.iter().any(|t| is_open(t.status));
+                if !has_open {
+                    return Ok(());
+                }
+                // Avoid permanent deadlock when another dev worker exited with an error leaving an orphaned open ticket.
+                let has_todo = tickets.iter().any(|t| t.status == TicketStatus::Todo);
+                if busy.load(Ordering::SeqCst) == 0 && !(has_todo && alive.load(Ordering::SeqCst) > 1) {
                     return Ok(());
                 }
                 store.set_runtime(dev_id, EmpStatus::Idle, "Chờ ticket", Some(pid), None);
@@ -690,7 +940,7 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, cancel: &
     loop {
         let t = store.ticket(tid).ok_or("Ticket không tồn tại")?;
         let task = format!(
-            "{}\nĐọc docs/REQUIREMENTS.md (và docs/DESIGN.md, design/tokens.css, docs/ARCHITECTURE.md nếu có) cùng code hiện có. Viết code hoàn thành ticket này, theo thiết kế nếu có, tự kiểm tra bằng run_command nếu phù hợp, rồi gọi finish với tóm tắt thay đổi.",
+            "{}\nĐọc docs/REQUIREMENTS.md (và docs/DESIGN.md, design/tokens.css, docs/ARCHITECTURE.md, docs/DATA.md nếu có) cùng code hiện có. Viết code hoàn thành ticket này, theo thiết kế nếu có, đặt tệp đúng cây thư mục trong docs/ARCHITECTURE.md và chuẩn cấu trúc của công ty (src/ tách domain/data/ui, tests/unit|integration, không trùng lặp tệp, mỗi tệp một trách nhiệm), tự kiểm tra bằng run_command nếu phù hợp, rồi gọi finish với tóm tắt thay đổi.",
             ticket_brief(&t)
         );
         let r = agent::run(store, Job { employee_id: dev_id.into(), project_id: pid.into(), phase: "implement", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await?;
@@ -702,7 +952,7 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, cancel: &
         if let Some(rev) = first(store, &[Role::Reviewer]) {
             store.update_ticket(tid, |t| t.status = TicketStatus::Review);
             handoff(store, pid, dev_id, &rev.id, format!("Nhờ review {}: {}", t.key, t.title));
-            let task = format!("{}\nDev báo: {dev_summary}\n\nReview phần code liên quan. Gọi approve_code nếu đạt, request_changes nếu có lỗi thật cần sửa.", ticket_brief(&t));
+            let task = format!("{}\nDev báo: {dev_summary}\n\nXem đúng phần thay đổi bằng run_command `git status` và `git diff -- <tệp liên quan>` rồi review: đúng chức năng, an toàn, dễ đọc, và đúng cấu trúc thư mục / quy ước trong docs/ARCHITECTURE.md (đặt sai chỗ, tệp trùng lặp, tệp quá dài nhiều trách nhiệm cũng là lỗi cần sửa). Gọi approve_code nếu đạt, request_changes nếu có lỗi thật cần sửa.", ticket_brief(&t));
             let r = agent::run(store, Job { employee_id: rev.id.clone(), project_id: pid.into(), phase: "review", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await?;
             store.kpi(&rev.id, |k| k.reviews += 1);
             if let Outcome::Changes(c) = &r.outcome {
@@ -722,13 +972,15 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, cancel: &
         let Some(tester) = first(store, &[Role::Tester]) else {
             store.update_ticket(tid, |t| t.status = TicketStatus::Done);
             store.kpi(dev_id, |k| k.tickets_done += 1);
+            crate::gitflow::commit(store, pid, &format!("{}: {}\n\n{}", t.key, t.title, short_text(&dev_summary, 600))).await;
             return Ok(());
         };
         store.update_ticket(tid, |t| t.status = TicketStatus::Testing);
         handoff(store, pid, dev_id, &tester.id, format!("Nhờ test {}: {}", t.key, t.title));
         let task = format!(
-            "{}\nDev báo: {dev_summary}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu: đọc code liên quan, chạy lệnh kiểm tra/test nếu có thể (có thể viết test trong tests/). Gọi pass_ticket nếu đạt hết, fail_ticket kèm mô tả lỗi cụ thể nếu chưa đạt.",
-            ticket_brief(&t)
+            "{}\nDev báo: {dev_summary}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy bộ test hiện có; test như người dùng trên trình duyệt thật ở bản xem thử {} (desktop và 375px, xem lỗi console) nếu có công cụ trình duyệt; thử ca biên; viết test tự động cho hành vi này và GIỮ LẠI trong dự án; cập nhật docs/TEST-PLAN.md. Chỉ đọc code liên quan tới ticket. Gọi pass_ticket nếu đạt hết, fail_ticket kèm mô tả lỗi cụ thể (bước tái hiện, mong đợi / thực tế, cỡ màn hình) nếu chưa đạt.",
+            ticket_brief(&t),
+            crate::config::preview_url(pid)
         );
         let r = agent::run(store, Job { employee_id: tester.id.clone(), project_id: pid.into(), phase: "test", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await?;
         match r.outcome {
@@ -747,6 +999,7 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, cancel: &
                 });
                 store.kpi(dev_id, |k| k.tickets_done += 1);
                 store.post_message(Some(pid), &tester.id, dev_id, format!("{} đạt ✔", t.key), "chat");
+                crate::gitflow::commit(store, pid, &format!("{}: {}\n\n{}", t.key, t.title, short_text(&dev_summary, 600))).await;
                 return Ok(());
             }
         }
@@ -772,7 +1025,130 @@ fn bounce(store: &S, tid: &str, note: String, max: u32) -> bool {
 
 /// DevOps checks the build. Returns true when bugs were filed and the team must build again.
 async fn phase_release(store: &S, p: &Project, cancel: &CancellationToken) -> Result<bool, String> {
-    release_check(store, p, p.release_rounds < MAX_RELEASE_ROUNDS, cancel).await
+    if p.design_reviews < MAX_DESIGN_REVIEWS && design_review(store, p, cancel).await? {
+        return Ok(true); // UI issues → back to Build
+    }
+    if p.security_reviews < 1 && security_review(store, p, cancel).await? {
+        return Ok(true); // vulnerabilities → back to Build
+    }
+    if release_check(store, p, p.release_rounds < MAX_RELEASE_ROUNDS, cancel).await? {
+        return Ok(true);
+    }
+    if p.qa_rounds < MAX_QA_ROUNDS && final_qa(store, p, cancel).await? {
+        return Ok(true); // regressions → back to Build
+    }
+    write_specification(store, p, cancel).await?;
+    Ok(false)
+}
+
+/// The PM writes the product specification and user guide, with real screenshots and flow diagrams.
+async fn write_specification(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
+    let Some(pm) = first(store, &[Role::Pm, Role::Ba, Role::Ceo]) else { return Ok(()) };
+    if let Some(from) = first(store, &[Role::Tester, Role::Devops]) {
+        handoff(store, &p.id, &from.id, &pm.id, "Sản phẩm đã qua kiểm định, nhờ PM viết tài liệu đặc tả và hướng dẫn sử dụng.");
+    }
+    let task = format!(
+        "Sản phẩm đã hoàn thành và qua kiểm định. Viết TÀI LIỆU ĐẶC TẢ VÀ HƯỚNG DẪN SỬ DỤNG chuyên nghiệp (như PM của công ty phần mềm lớn bàn giao cho khách) tại docs/SPECIFICATION.md, đọc docs/ (PLAN, DECISIONS, REQUIREMENTS, DESIGN, ARCHITECTURE, DATA, QA-REPORT) và dùng thử sản phẩm thật ở bản xem thử {}.\nNội dung:\n1. Tổng quan: sản phẩm là gì, giải quyết vấn đề gì, dành cho ai; phiên bản; ngày bàn giao.\n2. Bảng danh sách tính năng (mã, tên, mô tả, trang / module).\n3. Từng màn hình: mục đích, các thành phần, thao tác, trạng thái (rỗng / lỗi / đang tải), quy tắc kiểm tra dữ liệu và thông báo lỗi — KÈM ẢNH CHỤP THẬT ở máy tính và điện thoại: dùng công cụ trình duyệt mở từng màn, browser_take_screenshot với filename \"docs/images/ten-man-hinh-desktop.png\" và \"docs/images/ten-man-hinh-mobile.png\" (browser_resize 375x812 cho điện thoại; tên tệp không dấu, kebab-case), rồi chèn vào tài liệu bằng ![mô tả](images/ten-man-hinh-desktop.png).\n4. Luồng người dùng chính: sơ đồ Mermaid (```mermaid flowchart```) cho từng luồng + mô tả từng bước.\n5. Quy tắc nghiệp vụ, dữ liệu được lưu (đơn giản hóa từ docs/DATA.md), quyền riêng tư.\n6. Hướng dẫn cài đặt / chạy / triển khai cho bên kỹ thuật của khách.\n7. Câu hỏi thường gặp, giới hạn hiện tại, đề xuất phát triển tiếp, lịch sử thay đổi.\nViết tiếng Việt, rõ ràng cho người không rành kỹ thuật, có mục lục. Nếu không có công cụ trình duyệt thì mô tả màn hình bằng lời. Xong gọi finish.{}",
+        crate::config::preview_url(&p.id),
+        revision_note(p)
+    );
+    agent::run(store, Job { employee_id: pm.id.clone(), project_id: p.id.clone(), phase: "documentation", ticket_id: None, case_id: None, task }, cancel).await?;
+    store.post_message(Some(&p.id), &pm.id, "all", "Đã có tài liệu đặc tả và hướng dẫn sử dụng: docs/SPECIFICATION.md", "chat");
+    Ok(())
+}
+
+/// The Security Engineer audits the code and dependencies; serious findings block the release.
+async fn security_review(store: &S, p: &Project, cancel: &CancellationToken) -> Result<bool, String> {
+    let Some(sec) = first(store, &[Role::Security]) else { return Ok(false) };
+    store.update_project(&p.id, |p| p.security_reviews += 1);
+    if let Some(from) = first(store, &[Role::Tester, Role::Dev]) {
+        handoff(store, &p.id, &from.id, &sec.id, "Code đã xong, nhờ Security kiểm tra bảo mật trước khi phát hành.");
+    }
+    let task = format!(
+        "Kiểm tra BẢO MẬT toàn bộ dự án trước khi phát hành, theo kỹ năng Security của bạn:\n1. Thư viện: chạy `npm audit --omit=dev` (hoặc công cụ tương đương của ngôn ngữ) nếu có tệp khai báo phụ thuộc.\n2. Bí mật: tìm khóa API, mật khẩu, token, chuỗi kết nối bị ghi cứng trong code / cấu hình / lịch sử (`git log -p` nếu cần).\n3. Code theo OWASP Top 10: XSS (innerHTML, chèn HTML chưa lọc), injection, xác thực / phân quyền, kiểm tra dữ liệu đầu vào, lưu dữ liệu nhạy cảm, CORS / CSP / header bảo mật, đường dẫn tệp, tải tệp lên, lộ thông tin lỗi.\n4. Với giao diện web: mở bản xem thử {} bằng trình duyệt nếu có công cụ, thử nhập chuỗi tấn công XSS vào các ô nhập.\nMỗi lỗ hổng mức Cao / Nghiêm trọng gọi report_issue (mô tả, vị trí, cách khai thác, cách sửa cụ thể). Lỗi mức Thấp / Trung bình chỉ ghi vào báo cáo. Viết docs/SECURITY.md: phạm vi đã kiểm, kết quả từng hạng mục, danh sách phát hiện theo mức độ, khuyến nghị. Xong gọi finish với kết luận có an toàn để phát hành không.{}",
+        crate::config::preview_url(&p.id),
+        revision_note(p)
+    );
+    let r = agent::run(store, Job { employee_id: sec.id.clone(), project_id: p.id.clone(), phase: "security", ticket_id: None, case_id: None, task }, cancel).await?;
+    if r.created_tickets > 0 {
+        if let Some(dev) = first(store, &[Role::Dev]) {
+            handoff(store, &p.id, &sec.id, &dev.id, format!("Có {} lỗ hổng bảo mật cần sửa trước khi phát hành.", r.created_tickets));
+        }
+        return Ok(true);
+    }
+    store.post_message(Some(&p.id), &sec.id, "all", format!("Kiểm tra bảo mật: {}", summary_of(&r.outcome)), "chat");
+    Ok(false)
+}
+
+/// After hand-over the team looks back; lessons go to docs/RETRO.md and the company memory.
+async fn retrospective(store: &S, p: &Project, cancel: &CancellationToken) {
+    let Some(host) = first(store, &[Role::Pm, Role::Ceo]) else { return };
+    let tickets = store.tickets_of(&p.id);
+    let mut stats = String::new();
+    for t in &tickets {
+        stats.push_str(&format!("- {} [{:?}] trả lại {} lần: {}\n", t.key, t.status, t.bounces, t.title));
+    }
+    let task = format!(
+        "Họp RÚT KINH NGHIỆM (retrospective) sau khi bàn giao dự án \"{}\". Số liệu ticket:\n{stats}\nĐọc docs/QA-REPORT.md, docs/SECURITY.md, docs/DESIGN-REVIEW.md, docs/RELEASE.md, docs/DECISIONS.md (nếu có). Viết docs/RETRO.md: điều làm tốt; điều chưa tốt và NGUYÊN NHÂN GỐC (vì sao ticket bị trả lại, lỗi nào lọt tới kiểm định cuối, bước nào tốn công nhất); bài học; 3–5 hành động cụ thể cho dự án sau. Nếu có công cụ memory__, lưu 3–5 bài học quan trọng nhất vào bộ nhớ chung của công ty (ngắn gọn, dùng được cho dự án khác). Xong gọi finish với tóm tắt.",
+        p.name
+    );
+    match agent::run(store, Job { employee_id: host.id.clone(), project_id: p.id.clone(), phase: "retro", ticket_id: None, case_id: None, task }, cancel).await {
+        Ok(r) => {
+            store.post_message(Some(&p.id), &host.id, "all", format!("Rút kinh nghiệm: {}", summary_of(&r.outcome)), "chat");
+        }
+        Err(e) if e != ABORTED => store.log_activity(&host.id, Some(&p.id), "error", format!("Không họp rút kinh nghiệm được: {e}")),
+        _ => {}
+    };
+}
+
+/// Before hand-over the Tester re-tests the WHOLE product (regression + every acceptance criterion).
+async fn final_qa(store: &S, p: &Project, cancel: &CancellationToken) -> Result<bool, String> {
+    let Some(tester) = first(store, &[Role::Tester]) else { return Ok(false) };
+    store.update_project(&p.id, |p| p.qa_rounds += 1);
+    if let Some(from) = first(store, &[Role::Devops]) {
+        handoff(store, &p.id, &from.id, &tester.id, "Bản phát hành đã build xong, nhờ QA kiểm định toàn bộ lần cuối.");
+    }
+    let task = format!(
+        "KIỂM ĐỊNH CUỐI trước khi bàn giao Chủ tịch — tiêu chuẩn sản phẩm thương mại, không phải bài tập. Theo kỹ năng Tester của bạn:
+1. Chạy toàn bộ lint / typecheck / test / build của dự án.
+2. Đi qua TẤT CẢ tiêu chí nghiệm thu trong docs/REQUIREMENTS.md và docs/TEST-PLAN.md trên trình duyệt thật ở bản xem thử {} — cả 1280px và 375px — như một người dùng mới: luồng chính, ca biên, dữ liệu rỗng / nhiều, tải lại trang, lỗi console.
+3. Soát chất lượng tổng thể: giao diện có chỗ nào xấu / lệch / khó hiểu, chữ tiếng Việt, thông báo lỗi, tốc độ.
+Mỗi lỗi THẬT gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình, mức độ). Viết docs/QA-REPORT.md: đã kiểm gì, kết quả từng tiêu chí (đạt / chưa), lỗi còn lại. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
+        crate::config::preview_url(&p.id),
+        revision_note(p)
+    );
+    let r = agent::run(store, Job { employee_id: tester.id.clone(), project_id: p.id.clone(), phase: "final_qa", ticket_id: None, case_id: None, task }, cancel).await?;
+    if r.created_tickets > 0 {
+        if let Some(dev) = first(store, &[Role::Dev]) {
+            handoff(store, &p.id, &tester.id, &dev.id, format!("Kiểm định cuối còn {} lỗi, nhờ Dev sửa.", r.created_tickets));
+        }
+        return Ok(true);
+    }
+    store.post_message(Some(&p.id), &tester.id, "all", format!("Kiểm định cuối: {}", summary_of(&r.outcome)), "chat");
+    Ok(false)
+}
+
+/// The Designer looks at the real product in a browser and files tickets for visual problems.
+async fn design_review(store: &S, p: &Project, cancel: &CancellationToken) -> Result<bool, String> {
+    let Some(designer) = first(store, &[Role::Designer]) else { return Ok(false) };
+    store.update_project(&p.id, |p| p.design_reviews += 1);
+    if let Some(from) = first(store, &[Role::Tester, Role::Dev]) {
+        handoff(store, &p.id, &from.id, &designer.id, "Các ticket đã xong, nhờ Designer duyệt giao diện thật.");
+    }
+    let task = format!(
+        "Duyệt giao diện sản phẩm THẬT so với docs/DESIGN.md, design/tokens.css và design/mockup.html, theo kỹ năng Designer của bạn. Mở bản xem thử {} bằng công cụ trình duyệt, đi qua từng trang và trạng thái chính, chụp màn hình ở 1280px và 375px. Với mỗi lỗi giao diện thật (lệch, chồng chéo, tràn ngang, chữ bị cắt, tương phản kém, sai token, thiếu trạng thái, không nhất quán, trông thiếu chuyên nghiệp) gọi create_ticket: tiêu chí ghi rõ vị trí, hiện trạng, cách sửa cụ thể (token / CSS). Gộp lỗi nhỏ cùng trang vào một ticket. Ghi nhận xét vào docs/DESIGN-REVIEW.md. Nếu không có công cụ trình duyệt thì đọc CSS / HTML để soát. Không tạo ticket vì sở thích cá nhân. Xong gọi finish.{}",
+        crate::config::preview_url(&p.id),
+        revision_note(p)
+    );
+    let r = agent::run(store, Job { employee_id: designer.id.clone(), project_id: p.id.clone(), phase: "design_review", ticket_id: None, case_id: None, task }, cancel).await?;
+    if r.created_tickets > 0 {
+        if let Some(dev) = first(store, &[Role::Dev]) {
+            handoff(store, &p.id, &designer.id, &dev.id, format!("Giao diện còn {} điểm cần sửa, nhờ Dev xử lý.", r.created_tickets));
+        }
+        return Ok(true);
+    }
+    store.post_message(Some(&p.id), &designer.id, "all", format!("Duyệt giao diện: {}", summary_of(&r.outcome)), "chat");
+    Ok(false)
 }
 
 pub(crate) async fn release_check(store: &S, p: &Project, allow_bugs: bool, cancel: &CancellationToken) -> Result<bool, String> {
@@ -781,7 +1157,7 @@ pub(crate) async fn release_check(store: &S, p: &Project, allow_bugs: bool, canc
         handoff(store, &p.id, &from.id, &ops.id, "Các ticket đã xong, nhờ DevOps kiểm tra bản phát hành.");
     }
     let task = format!(
-        "Kiểm tra sản phẩm có chạy được không: xem các tệp, chạy lệnh build/test phù hợp (vd. node --check, npm install && npm run build, python -m py_compile, cargo build). Viết hoặc cập nhật README.md ở gốc dự án: giới thiệu, yêu cầu, cách cài, cách chạy. Ghi docs/RELEASE.md: đã kiểm tra gì, kết quả.{} Xong gọi finish.{}",
+        "Kiểm tra sản phẩm có chạy được không: xem các tệp, chạy lệnh build/test phù hợp (vd. node --check, npm install && npm run build, python -m py_compile, cargo build). Đối chiếu cấu trúc dự án với docs/ARCHITECTURE.md và chuẩn công ty (README, CHANGELOG, .gitignore, .editorconfig, src/app, src/pages, src/modules, src/shared đúng quy tắc phụ thuộc, tests/, CI, không có tệp trùng lặp). Nếu dự án có bước build thì chạy build ra dist/ (đường dẫn tương đối) để Chủ tịch mở xem thử được. Viết hoặc cập nhật README.md ở gốc dự án: giới thiệu, yêu cầu, cách cài, cách chạy, cách test, cấu trúc thư mục. Cập nhật CHANGELOG.md. Ghi docs/RELEASE.md: đã kiểm tra gì, kết quả.{} Xong gọi finish.{}",
         if allow_bugs {
             " Nếu có lỗi chặn phát hành, gọi report_issue cho từng lỗi (Dev sẽ sửa rồi bạn kiểm tra lại)."
         } else {
@@ -815,7 +1191,7 @@ async fn phase_report(store: &S, p: &Project, cancel: &CancellationToken) -> Res
     let all = everyone(store);
     meeting(store, &p.id, all.clone(), "Họp tổng kết", true);
     let task = format!(
-        "Đội đã xử lý các ticket:\n{list}\nĐọc docs/ (PLAN, REQUIREMENTS, SPRINT, DESIGN, RELEASE nếu có) và xem các tệp sản phẩm. Viết docs/REPORT.md: đã làm gì, cách chạy/mở sản phẩm, hạn chế còn lại (nêu rõ ticket bị Blocked nếu có), ghi nhận thành viên nổi bật. Sau đó gọi finish với lời báo cáo ngắn gửi Chủ tịch.{}",
+        "Đội đã xử lý các ticket:\n{list}\nĐọc docs/ (PLAN, REQUIREMENTS, SPRINT, DESIGN, RELEASE nếu có) và xem các tệp sản phẩm. Viết docs/REPORT.md: đã làm gì (nhắc tài liệu đặc tả docs/SPECIFICATION.md cho khách), cách chạy/mở sản phẩm, hạn chế còn lại (nêu rõ ticket bị Blocked nếu có), ghi nhận thành viên nổi bật. Sau đó gọi finish với lời báo cáo ngắn gửi Chủ tịch.{}",
         revision_note(p)
     );
     let r = agent::run(store, Job { employee_id: ceo.id.clone(), project_id: p.id.clone(), phase: "report", ticket_id: None, case_id: None, task }, cancel).await;

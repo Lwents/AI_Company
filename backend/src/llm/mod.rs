@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
 pub struct ToolDef {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     /// JSON Schema object for the tool input.
     pub schema: Value,
 }
@@ -29,7 +29,12 @@ pub struct ToolResult {
     pub id: String,
     pub content: String,
     pub is_error: bool,
+    /// Images returned by the tool (mime type, base64), e.g. browser screenshots.
+    pub images: Vec<(String, String)>,
 }
+
+/// Only the most recent screenshots are sent back to the model (they are large).
+pub const KEEP_IMAGES: usize = 2;
 
 #[derive(Clone, Debug)]
 pub enum LlmMessage {
@@ -124,6 +129,41 @@ pub fn backoff(attempt: u32, retry_after: Option<&reqwest::header::HeaderValue>)
     retry_after
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(|s| Duration::from_secs(s.min(60)))
-        .unwrap_or_else(|| Duration::from_millis(1500 * 2u64.pow(attempt)))
+        .map(|s| Duration::from_secs(s.min(120)))
+        .unwrap_or_else(|| Duration::from_millis((2000 * 2u64.pow(attempt.min(5))).min(60_000)))
+}
+
+/// Cool-down announced in an error body, e.g. 9router's "(reset after 1m 19s)". Capped at 3 minutes.
+pub fn reset_after(text: &str) -> Option<Duration> {
+    let i = text.find("reset after")?;
+    let rest = &text[i + "reset after".len()..];
+    let mut secs = 0u64;
+    let mut num = String::new();
+    for c in rest.chars().take(24) {
+        if c.is_ascii_digit() {
+            num.push(c);
+        } else if !num.is_empty() {
+            let n: u64 = num.parse().unwrap_or(0);
+            match c {
+                'h' => secs += n * 3600,
+                'm' => secs += n * 60,
+                's' => secs += n,
+                _ => {}
+            }
+            num.clear();
+        } else if c == ')' {
+            break;
+        }
+    }
+    (secs > 0).then(|| Duration::from_secs(secs.min(180) + 2))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parses_reset_after() {
+        assert_eq!(super::reset_after("x (reset after 1m 19s)\"}}").unwrap().as_secs(), 81);
+        assert_eq!(super::reset_after("reset after 45s").unwrap().as_secs(), 47);
+        assert!(super::reset_after("no hint").is_none());
+    }
 }

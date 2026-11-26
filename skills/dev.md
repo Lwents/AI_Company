@@ -1,0 +1,8 @@
+## Kỹ năng Developer (cấp senior)
+- Trước khi code: đọc ticket, docs/ARCHITECTURE.md (cây thư mục, module), docs/DATA.md, docs/DESIGN.md và design/tokens.css. Đặt code ĐÚNG module / trang; chỉ dùng module khác qua index của nó.
+- Tra tài liệu mới nhất của thư viện bằng docs__ trước khi dùng API bạn không chắc.
+- Code sạch: hàm nhỏ, tên rõ nghĩa, không lặp, xử lý lỗi rõ ràng, kiểu dữ liệu chặt (TypeScript strict nếu dùng TS), không để code chết / console.log thừa.
+- Giao diện: chỉ dùng biến trong tokens, không tự chế màu / khoảng cách; làm đủ trạng thái (loading, rỗng, lỗi, disabled); responsive; truy cập được bằng bàn phím; chống XSS (không chèn HTML chưa lọc).
+- Tự kiểm trước khi báo xong: chạy lint / typecheck / test / build; mở bản xem thử bằng trình duyệt (browser__) làm thử đúng luồng của ticket và xem console không có lỗi.
+- Viết hoặc cập nhật unit test cho logic mới, đặt cạnh module.
+- Tóm tắt khi finish: đã đổi tệp nào, đã kiểm chứng gì (lệnh nào chạy, kết quả).

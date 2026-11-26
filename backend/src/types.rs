@@ -19,6 +19,8 @@ pub enum Role {
     Support,
     Hr,
     Accountant,
+    DataEngineer,
+    Security,
     Legal,
 }
 
@@ -190,11 +192,48 @@ pub struct Project {
     /// How many times DevOps sent the build back with bugs (this round).
     #[serde(default)]
     pub release_rounds: u32,
+    /// Design reviews done in this round of work.
+    #[serde(default)]
+    pub design_reviews: u32,
+    /// Whole-product QA passes done in this round of work.
+    #[serde(default)]
+    pub qa_rounds: u32,
+    /// Security reviews done in this round of work.
+    #[serde(default)]
+    pub security_reviews: u32,
+    /// Automatic restarts after a failure (reset when a run completes).
+    #[serde(default)]
+    pub auto_retries: u32,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,
+    /// Technology the chairman asked for ("" = the CEO asks at kickoff).
+    #[serde(default)]
+    pub tech: String,
+    /// Frozen source snapshots (hand-overs, releases), oldest first.
+    #[serde(default)]
+    pub versions: Vec<ProjectVersion>,
+    /// Built on the customer's existing source code (uploaded zip or Git) instead of from scratch.
+    #[serde(default)]
+    pub existing: bool,
+    /// Where that code came from (file name or Git URL).
+    #[serde(default)]
+    pub source: String,
+    /// Absolute folder on this computer the team works in directly ("" = workspace/<slug>).
+    #[serde(default)]
+    pub dir: String,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectVersion {
+    pub n: u32,
+    pub label: String,
+    pub ts: u64,
+    pub size: u64,
+    pub files: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -384,6 +423,14 @@ pub struct Settings {
     pub mock_delay_ms: u64,
     /// Discussion rounds at the kickoff meeting before the CEO decides (0 = the CEO decides alone).
     pub meeting_rounds: u32,
+    /// Model a stuck employee switches to (same provider / endpoint); "" = none.
+    pub fallback_model: String,
+    /// Times a failed project is restarted automatically (5 minutes apart).
+    pub auto_retries: u32,
+    /// Cheaper model for light jobs (votes, minutes, stand-ups); "" = everyone uses their own model.
+    pub light_model: String,
+    /// The chairman approves the design mockup before anything is built.
+    pub approve_design: bool,
 }
 
 impl Default for Settings {
@@ -396,6 +443,10 @@ impl Default for Settings {
             default_budget_usd: 2.0,
             mock_delay_ms: 1200,
             meeting_rounds: 2,
+            fallback_model: String::new(),
+            auto_retries: 3,
+            light_model: String::new(),
+            approve_design: true,
         }
     }
 }

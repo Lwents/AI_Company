@@ -32,7 +32,7 @@ fn live(store: &S, pid: &str) -> Option<Project> {
 async fn page(State(store): State<S>, Path(pid): Path<String>) -> Response {
     let Some(p) = store.project(&pid) else { return (StatusCode::NOT_FOUND, "Không tìm thấy sản phẩm").into_response() };
     let open = live(&store, &pid).is_some();
-    let landing = store.workspace_dir.join(&p.slug).join("marketing").join("landing.html").exists();
+    let landing = store.dir_of(&p).join("marketing").join("landing.html").exists();
     let html = PAGE
         .replace("{{NAME}}", &esc(&p.name))
         .replace("{{PID}}", &esc(&pid))

@@ -7,6 +7,7 @@ use crate::types::*;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone)]
 pub struct Job {
     pub employee_id: String,
     pub project_id: String,
@@ -36,6 +37,14 @@ Quy tắc:\n\
         pname = project.name,
         dir = dir.display(),
     );
+    // The project's non-negotiable principles apply to everyone, every step.
+    if let Ok(c) = std::fs::read_to_string(dir.join("docs").join("CONSTITUTION.md")) {
+        let c: String = c.trim().chars().take(4000).collect();
+        if !c.is_empty() {
+            s.push_str("\n\n# NGUYÊN TẮC DỰ ÁN (docs/CONSTITUTION.md — bắt buộc tuân thủ, không được vi phạm)\n");
+            s.push_str(&c);
+        }
+    }
     if !e.extra_prompt.trim().is_empty() {
         s.push_str("\n\nChỉ dẫn thêm từ Chủ tịch:\n");
         s.push_str(e.extra_prompt.trim());
@@ -98,6 +107,18 @@ fn short(s: &str, n: usize) -> String {
 
 fn describe_call(name: &str, input: &serde_json::Value) -> String {
     let g = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if let Some((server, tool)) = name.split_once("__") {
+        let what = match tool {
+            "browser_navigate" => format!("Mở {}", g("url")),
+            "browser_take_screenshot" => "Chụp màn hình".into(),
+            "browser_snapshot" => "Đọc trang".into(),
+            "browser_click" => format!("Bấm {}", g("element")),
+            "browser_type" => format!("Gõ vào {}", g("element")),
+            "browser_resize" => "Đổi cỡ màn hình".into(),
+            _ => tool.replace('_', " "),
+        };
+        return format!("[{server}] {what}");
+    }
     match name {
         "write_file" => format!("Ghi {}", g("path")),
         "read_file" => format!("Đọc {}", g("path")),
@@ -146,11 +167,111 @@ pub fn case_transcript(store: &S, c: &SupportCase) -> String {
     s
 }
 
+/// Errors a different person, model or wording can get past (model / provider trouble, refusals, running out of steps).
+fn recoverable(e: &str) -> bool {
+    const PROVIDERS: [&str; 6] = ["Custom", "Openai", "Openrouter", "Gemini", "Anthropic", "Ollama"];
+    e != "aborted" && (PROVIDERS.iter().any(|p| e.starts_with(p)) || e.contains("từ chối yêu cầu") || e.contains("bước mà chưa xong"))
+}
+
+/// Who steps in when someone is stuck: Tech Lead for engineers, otherwise the CEO (then the PM).
+fn supervisor(store: &S, of: &Employee) -> Option<Employee> {
+    let order: &[Role] = match of.role {
+        Role::Dev | Role::Reviewer | Role::Tester | Role::Devops | Role::DataEngineer | Role::Security => &[Role::Architect, Role::Ceo, Role::Pm],
+        Role::Ceo => &[Role::Pm, Role::Architect],
+        _ => &[Role::Ceo, Role::Pm],
+    };
+    order.iter().filter_map(|r| store.staff(*r).into_iter().find(|e| e.id != of.id)).next()
+}
+
+/// The supervisor rewrites the assignment: clearer, smaller steps, neutral professional wording, same goal.
+async fn rephrase(store: &S, sup: &Employee, stuck: &Employee, job: &Job, err: &str, cancel: &CancellationToken) -> Option<String> {
+    let meta = Meta {
+        phase: "rephrase",
+        project_id: job.project_id.clone(),
+        extra: String::new(),
+        project_name: String::new(),
+        request: String::new(),
+        ticket: None,
+    };
+    let system = format!("{}\nBạn đang hỗ trợ một nhân viên gặp sự cố khi làm việc.", config::role_duty(sup.role));
+    let ask = format!(
+        "{} ({}) không hoàn thành được việc dưới đây do sự cố: {}\n\nViết lại lời giao việc cho rõ ràng và dễ làm hơn: nêu bối cảnh nghiệp vụ của dự án, chia thành các bước nhỏ theo thứ tự, câu chữ trung tính và chuyên nghiệp, nói rõ cần đọc tệp nào và kết thúc bằng công cụ nào. GIỮ NGUYÊN mục tiêu, phạm vi và mọi tiêu chí nghiệm thu — không bỏ hay đổi yêu cầu nào. Chỉ trả về nội dung giao việc mới.\n\n--- Giao việc gốc ---\n{}",
+        stuck.name,
+        config::role_label(stuck.role),
+        short(err, 300),
+        job.task
+    );
+    let messages = vec![LlmMessage::User { text: Some(ask), tool_results: vec![] }];
+    let res = llm::chat(store, LlmRequest { employee: sup, system: &system, messages: &messages, tools: &[], max_tokens: 8000, meta: &meta }, cancel).await.ok()?;
+    store.add_usage(&sup.id, Some(&job.project_id), res.input_tokens, res.output_tokens);
+    let t = res.text.trim().to_string();
+    (t.chars().count() > 40).then_some(t)
+}
+
+/// Runs a job; if it fails for a recoverable reason the supervisor steps in (up to twice):
+/// 1st: hand it to a colleague with the same role, or to the backup model;
+/// 2nd: reword the assignment and try again (on the backup model if there is one).
+/// Jobs that don't need the strongest model.
+const LIGHT_PHASES: [&str; 3] = ["meeting_vote", "minutes", "standup"];
+
 pub async fn run(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobResult, String> {
+    let mut job = job;
+    let light = store.with(|s| s.settings.light_model.trim().to_string());
+    let mut model: Option<String> = (!light.is_empty() && LIGHT_PHASES.contains(&job.phase)).then_some(light);
+    let original = job.employee_id.clone();
+    for attempt in 0..3 {
+        let r = run_tracked(store, job.clone(), model.as_deref(), cancel).await;
+        let err = match &r {
+            Err(e) if attempt < 2 && recoverable(e) && !cancel.is_cancelled() => e.clone(),
+            _ => return r,
+        };
+        let Some(stuck) = store.employee(&job.employee_id) else { return r };
+        let sup = supervisor(store, &stuck);
+        let sup_name = sup.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "Hệ thống".into());
+        let sup_id = sup.as_ref().map(|s| s.id.clone()).unwrap_or_else(|| "system".into());
+        let backup = store.with(|s| s.settings.fallback_model.trim().to_string());
+        let backup = (!backup.is_empty() && backup != stuck.model).then_some(backup);
+        if attempt == 0 {
+            let colleague = store.staff(stuck.role).into_iter().find(|e| e.id != stuck.id && e.id != original && e.provider != ProviderId::Mock);
+            let note = if let Some(c) = colleague {
+                let n = format!("{} gặp sự cố ({}). {} giao lại việc cho {}.", stuck.name, short(&err, 90), sup_name, c.name);
+                job.employee_id = c.id;
+                n
+            } else if let Some(b) = backup.clone() {
+                let n = format!("{} gặp sự cố ({}). {} cho {} làm tiếp bằng model dự phòng {}.", stuck.name, short(&err, 90), sup_name, stuck.name, b);
+                model = Some(b);
+                n
+            } else {
+                String::new() // nobody else and no backup model: go straight to rewording
+            };
+            if !note.is_empty() {
+                store.post_message(Some(&job.project_id), &sup_id, "all", note, "chat");
+                continue;
+            }
+        }
+        if model.is_none() {
+            model = backup;
+        }
+        let Some(sup) = sup else { return r };
+        store.set_runtime(&sup.id, EmpStatus::Thinking, format!("Diễn đạt lại việc cho {}", stuck.name), Some(&job.project_id), job.ticket_id.as_deref());
+        let reworded = rephrase(store, &sup, &stuck, &job, &err, cancel).await;
+        store.set_runtime(&sup.id, EmpStatus::Idle, "", None, None);
+        match reworded {
+            Some(t) => {
+                job.task = t;
+                store.post_message(Some(&job.project_id), &sup.id, "all", format!("{} vướng ({}). {} đã diễn đạt lại yêu cầu rõ hơn và giao lại.", stuck.name, short(&err, 90), sup.name), "chat");
+            }
+            None => return r,
+        }
+    }
+    Err("aborted".into())
+}
+
+async fn run_tracked(store: &S, job: Job, model: Option<&str>, cancel: &CancellationToken) -> Result<JobResult, String> {
     let emp_id = job.employee_id.clone();
     let pid = job.project_id.clone();
     let started = now_ms();
-    let r = run_job(store, job, cancel).await;
+    let r = run_job(store, job, model, cancel).await;
     let took = now_ms().saturating_sub(started);
     match &r {
         Ok(_) => store.kpi(&emp_id, |k| {
@@ -173,10 +294,10 @@ pub async fn run(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
     r
 }
 
-async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobResult, String> {
+async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &CancellationToken) -> Result<JobResult, String> {
     let emp = store.employee(&job.employee_id).ok_or("Nhân viên không tồn tại")?;
     let project = store.project(&job.project_id).ok_or("Dự án không tồn tại")?;
-    let dir = store.workspace_dir.join(&project.slug);
+    let dir = store.dir_of(&project);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
 
     // One person does one job at a time.
@@ -192,8 +313,24 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
         request: project.request.clone(),
         ticket: ticket.as_ref().map(|t| llm::TicketMeta { key: t.key.clone(), title: t.title.clone(), bounces: t.bounces }),
     };
-    let tools = tools::tools_for(emp.role, job.phase);
-    let system = system_prompt(&emp, &project, &dir);
+    let mut tools = tools::tools_for(emp.role, job.phase);
+    let mut system = system_prompt(&emp, &project, &dir);
+    // Skills (role playbooks) and MCP servers (browser, docs, …) for this role.
+    let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    system.push_str(&crate::skills::for_role(&root, emp.role));
+    let mut mcp = if emp.provider == ProviderId::Mock { None } else { Some(crate::mcp::Session::start(&root, &dir, emp.role).await) };
+    if let Some(m) = &mcp {
+        for t in &m.tools {
+            tools.push(llm::ToolDef { name: t.name.clone(), description: t.description.clone(), schema: t.schema.clone() });
+        }
+        if !m.hints.is_empty() {
+            system.push_str(&format!(
+                "\n\nCông cụ MCP bạn có (tên dạng <nhóm>__<công cụ>):\n{}\nBản xem thử sản phẩm: {} (đã build thì là bản build trong dist/; tệp lẻ như design/mockup.html mở bằng đường dẫn tương ứng).",
+                m.hints.join("\n"),
+                crate::config::preview_url(&project.id)
+            ));
+        }
+    }
     let mut first = job.task.clone();
     if let Some(inbox) = take_inbox(store, &emp.id, &project.id) {
         first.push_str(&inbox);
@@ -222,7 +359,10 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
         }
         budget_gate(store, &project.id, &emp.id, cancel).await?;
         // Pick up model changes made in the Staff panel while the job runs.
-        let emp_now = store.employee(&emp.id).unwrap_or_else(|| emp.clone());
+        let mut emp_now = store.employee(&emp.id).unwrap_or_else(|| emp.clone());
+        if let Some(m) = model {
+            emp_now.model = m.to_string();
+        }
         store.set_runtime(&emp.id, EmpStatus::Thinking, format!("Đang suy nghĩ · {}", emp_now.model), pid, tid);
         let permit = tokio::select! {
             p = store.llm_slots.acquire() => p.map_err(|e| e.to_string())?,
@@ -281,6 +421,7 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
                 .tool_calls
                 .iter()
                 .map(|c| ToolResult {
+                    images: vec![],
                     id: c.id.clone(),
                     content: "KHÔNG thực hiện: câu trả lời của bạn bị cắt vì vượt giới hạn độ dài, nội dung không đầy đủ. Hãy làm lại ngắn gọn hơn, hoặc chia thành nhiều tệp / nhiều lần ghi nhỏ.".into(),
                     is_error: true,
@@ -295,12 +436,22 @@ async fn run_job(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
             let label = describe_call(&c.name, &c.input);
             store.set_runtime(&emp.id, EmpStatus::Working, label.clone(), pid, tid);
             store.log_activity(&emp.id, pid, "tool", &label);
+            if let Some(m) = mcp.as_mut().filter(|m| m.has(&c.name)) {
+                let r = tokio::select! {
+                    r = m.call(&c.name, &c.input) => r,
+                    _ = cancel.cancelled() => return Err("aborted".into()),
+                };
+                let note = if r.images.is_empty() { short(&r.text, 800).to_string() } else { format!("{} [{} ảnh]", short(&r.text, 600), r.images.len()) };
+                store.log_activity(&emp.id, pid, if r.is_error { "error" } else { "result" }, note);
+                results.push(ToolResult { id: c.id.clone(), content: r.text, is_error: r.is_error, images: r.images });
+                continue;
+            }
             let (content, is_error) = tools::execute(&mut ctx, &c.name, &c.input).await;
             if content == "aborted" {
                 return Err("aborted".into());
             }
             store.log_activity(&emp.id, pid, if is_error { "error" } else { "result" }, short(&content, 800));
-            results.push(ToolResult { id: c.id.clone(), content, is_error });
+            results.push(ToolResult { id: c.id.clone(), content, is_error, images: vec![] });
         }
         messages.push(LlmMessage::User { text: None, tool_results: results });
         if let Some(outcome) = ctx.outcome.take() {

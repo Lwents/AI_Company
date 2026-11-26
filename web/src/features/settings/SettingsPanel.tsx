@@ -53,6 +53,23 @@ export function SettingsPanel() {
         </label>
         <p className="small muted">Các trưởng bộ phận góp ý rồi phản biện bản nháp của CEO trước khi CEO chốt. 0 = CEO tự quyết. Mỗi vòng tốn thêm khoảng 12 lượt gọi model.</p>
         <label>
+          Model dự phòng khi nhân viên gặp sự cố
+          <input placeholder="vd. ag/gemini-4-hydrogen-tiered-high(xhigh)" value={draft.fallbackModel} onChange={(e) => set("fallbackModel", e.target.value)} />
+        </label>
+        <label>
+          Model cho việc nhẹ (bỏ phiếu, biên bản, họp daily)
+          <input placeholder="để trống = ai dùng model nấy" value={draft.lightModel} onChange={(e) => set("lightModel", e.target.value)} />
+        </label>
+        <label className="row">
+          <input type="checkbox" checked={draft.approveDesign} onChange={(e) => set("approveDesign", e.target.checked)} />
+          Chủ tịch duyệt bản thiết kế giao diện trước khi code
+        </label>
+        <label>
+          Số lần tự chạy lại dự án khi lỗi (cách nhau 5 phút)
+          <input type="number" min={0} max={10} value={draft.autoRetries} onChange={(e) => set("autoRetries", Number(e.target.value))} />
+        </label>
+        <p className="small muted">Khi một nhân viên gặp sự cố, cấp trên giao việc cho đồng nghiệp cùng vai (hoặc model dự phòng), rồi nếu vẫn lỗi thì diễn đạt lại yêu cầu rõ hơn và giao lại.</p>
+        <label>
           Độ trễ giả lập của Mock (ms)
           <input type="number" min={0} max={10000} step={100} value={draft.mockDelayMs} onChange={(e) => set("mockDelayMs", Number(e.target.value))} />
         </label>

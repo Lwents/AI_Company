@@ -34,8 +34,8 @@ pub struct Ctx {
     pub last_write: Option<(String, u32)>,
 }
 
-fn tool(name: &'static str, description: &'static str, schema: Value) -> ToolDef {
-    ToolDef { name, description, schema }
+fn tool(name: &str, description: &str, schema: Value) -> ToolDef {
+    ToolDef { name: name.to_string(), description: description.to_string(), schema }
 }
 
 fn obj(props: Value, required: &[&str]) -> Value {
@@ -56,7 +56,7 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
             obj(json!({ "path": { "type": "string" }, "content": { "type": "string" } }), &["path", "content"]),
         ));
     }
-    if matches!(role, Role::Dev | Role::Tester | Role::Devops | Role::Architect | Role::Reviewer) {
+    if matches!(role, Role::Dev | Role::Tester | Role::Devops | Role::Architect | Role::Reviewer | Role::DataEngineer | Role::Security) {
         t.push(tool(
             "run_command",
             "Chạy một lệnh shell (Windows cmd) trong thư mục dự án, tối đa 120 giây. Dùng để chạy test, build, kiểm tra cú pháp.",
@@ -68,10 +68,10 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
         "Gửi tin nhắn cho đồng nghiệp theo vai trò (ceo, ba, dev, tester, ...). Họ sẽ đọc ở lượt việc tiếp theo.",
         obj(json!({ "to_role": { "type": "string" }, "text": { "type": "string" } }), &["to_role", "text"]),
     ));
-    if role == Role::Ceo {
+    if role == Role::Ceo || matches!(phase, "consult" | "clarify") {
         t.push(tool(
             "ask_chairman",
-            "Hỏi Chủ tịch (người dùng) khi yêu cầu thật sự mơ hồ. Chờ câu trả lời. Dùng tiết kiệm.",
+            "Hỏi Chủ tịch / khách hàng (người dùng) và chờ câu trả lời. Dùng tiết kiệm.",
             obj(json!({ "question": { "type": "string" } }), &["question"]),
         ));
     }
@@ -82,14 +82,14 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
             obj(json!({ "key": { "type": "string", "description": "Mã ticket, vd T-1" }, "priority": { "type": "integer", "enum": [1, 2, 3] } }), &["key", "priority"]),
         ));
     }
-    if phase == "release" {
+    if matches!(phase, "release" | "final_qa" | "security") {
         t.push(tool(
             "report_issue",
             "Mở ticket lỗi chặn phát hành (build hỏng, thiếu tệp, chạy không lên...). Dev sẽ sửa rồi DevOps kiểm tra lại.",
             obj(json!({ "title": { "type": "string" }, "description": { "type": "string" } }), &["title", "description"]),
         ));
     }
-    if matches!(phase, "requirements" | "architecture" | "planning") {
+    if matches!(phase, "requirements" | "architecture" | "planning" | "design_review" | "analyze") {
         t.push(tool(
             "create_ticket",
             "Tạo một ticket công việc cho Dev. Mỗi ticket nhỏ, làm được độc lập, có tiêu chí nghiệm thu kiểm tra được.",
@@ -145,7 +145,7 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
         t.push(tool(
             "propose_hire",
             "Đề xuất Chủ tịch tuyển thêm một người. Chỉ dùng khi có lý do rõ ràng từ số liệu.",
-            obj(json!({ "role": { "type": "string", "description": "ceo, pm, ba, architect, dev, reviewer, tester, devops, designer, secretary, marketing, sales, support, hr, accountant, legal" }, "reason": { "type": "string" } }), &["role", "reason"]),
+            obj(json!({ "role": { "type": "string", "description": "ceo, pm, ba, architect, dev, reviewer, tester, devops, designer, secretary, marketing, sales, support, hr, accountant, legal, data_engineer, security" }, "reason": { "type": "string" } }), &["role", "reason"]),
         ));
     }
     match phase {
@@ -202,6 +202,7 @@ fn may_write(role: Role, rel: &str) -> bool {
         Role::Hr => r.starts_with("hr/") || r.starts_with("docs/"),
         Role::Accountant => r.starts_with("finance/") || r.starts_with("docs/"),
         Role::Legal => r.starts_with("legal/") || r.starts_with("docs/"),
+        Role::Security => r.starts_with("docs/") || r.starts_with("security/") || r.starts_with("tests/"),
         _ => true,
     }
 }
@@ -299,7 +300,7 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
         "run_command" => run_command(ctx, s(input, "command")).await,
         "message_colleague" => {
             let role: Role = serde_json::from_value(json!(s(input, "to_role").to_lowercase()))
-                .map_err(|_| "to_role không hợp lệ (ceo, pm, ba, architect, dev, reviewer, tester, devops, designer, secretary)".to_string())?;
+                .map_err(|_| "to_role không hợp lệ (ceo, pm, ba, architect, data_engineer, security, dev, reviewer, tester, devops, designer, secretary)".to_string())?;
             let to = store.staff(role).first().map(|e| e.id.clone()).ok_or_else(|| format!("Công ty chưa có ai làm {role:?}"))?;
             let text = s(input, "text").to_string();
             store.post_message(Some(&pid), &me.id, &to, text.clone(), "chat");
@@ -311,7 +312,7 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             store.post_message(Some(&pid), &me.id, "chairman", q.clone(), "question");
             store.set_runtime(&me.id, EmpStatus::Waiting, "Chờ Chủ tịch trả lời", Some(&pid), None);
             let a = store
-                .request_approval(Some(&pid), &me.id, ApprovalKind::Question, "Câu hỏi từ CEO", q, &ctx.cancel)
+                .request_approval(Some(&pid), &me.id, ApprovalKind::Question, format!("Câu hỏi từ {} ({})", me.name, crate::config::role_label(me.role)), q, &ctx.cancel)
                 .await?;
             Ok(match (a.status, a.answer) {
                 (ApprovalStatus::Answered, Some(ans)) if !ans.trim().is_empty() => {
@@ -696,16 +697,24 @@ async fn run_command(ctx: &mut Ctx, command: &str) -> Result<String, String> {
     }
     store.set_runtime(&ctx.employee.id, EmpStatus::Working, format!("$ {command}"), Some(&ctx.project_id), ctx.ticket_id.as_deref());
 
-    let mut cmd = if cfg!(windows) {
+    #[cfg(windows)]
+    let mut cmd = {
         let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(command);
+        // Use /S /C with raw_arg so cmd.exe does not receive MSVCRT-escaped \" around quotes (e.g. node -e "...").
+        c.arg("/S").arg("/C").raw_arg(format!("\"{command}\""));
         c
-    } else {
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
         let mut c = tokio::process::Command::new("sh");
         c.arg("-c").arg(command);
         c
     };
     cmd.current_dir(&ctx.dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    // Git must never walk up into a parent repository (e.g. AI Company itself).
+    if let Some(parent) = ctx.dir.parent() {
+        cmd.env("GIT_CEILING_DIRECTORIES", parent);
+    }
     // Never leak API keys to code the agents run.
     for k in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "CUSTOM_API_KEY"] {
         cmd.env_remove(k);

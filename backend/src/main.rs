@@ -1,7 +1,12 @@
 mod agent;
 mod api;
 mod config;
+mod gitflow;
+mod history;
+mod import;
 mod llm;
+mod mcp;
+mod skills;
 mod ops;
 mod portal;
 mod store;

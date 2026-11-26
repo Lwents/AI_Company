@@ -46,7 +46,11 @@ fn to_messages(messages: &[LlmMessage]) -> Vec<Value> {
             LlmMessage::User { text, tool_results } => {
                 let mut content = Vec::new();
                 for r in tool_results {
-                    content.push(json!({ "type": "tool_result", "tool_use_id": r.id, "content": r.content, "is_error": r.is_error }));
+                    let mut blocks = vec![json!({ "type": "text", "text": r.content })];
+                    for (mime, data) in &r.images {
+                        blocks.push(json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": data } }));
+                    }
+                    content.push(json!({ "type": "tool_result", "tool_use_id": r.id, "content": blocks, "is_error": r.is_error }));
                 }
                 if let Some(t) = text {
                     content.push(json!({ "type": "text", "text": t }));

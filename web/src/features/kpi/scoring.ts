@@ -59,6 +59,7 @@ export function kpiRows(st: CompanyState): KpiRow[] {
         output = k.reviews * 5 + k.changesRequested * 5;
         break;
       case "devops":
+      case "security":
         output = k.jobs * 8 + k.bugsFound * 6;
         break;
       case "support":
@@ -76,6 +77,7 @@ export function kpiRows(st: CompanyState): KpiRow[] {
       case "ba":
       case "pm":
       case "architect":
+      case "data_engineer":
         output = k.ticketsCreated * 6 + k.jobs * 5;
         break;
       default:

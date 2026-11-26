@@ -1,0 +1,30 @@
+{
+  "mcpServers": {
+    "browser": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.84", "--browser", "msedge", "--headless", "--isolated", "--viewport-size", "1280,800", "--image-responses", "allow"],
+      "roles": ["pm", "designer", "dev", "reviewer", "tester", "devops", "security"],
+      "exclude": ["browser_run_code_unsafe", "browser_file_upload"],
+      "hint": "Trình duyệt thật (github.com/microsoft/playwright-mcp). Mở bản xem thử, bấm / gõ như người dùng, browser_snapshot để đọc trang, browser_take_screenshot để XEM giao diện, browser_resize để thử cỡ điện thoại (375x812), browser_console_messages để xem lỗi JS."
+    },
+    "docs": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@4.5.1"],
+      "roles": ["architect", "data_engineer", "security", "dev", "designer", "reviewer", "tester", "devops"],
+      "hint": "Tài liệu MỚI NHẤT của thư viện / framework (github.com/upstash/context7). Dùng trước khi viết code với thư viện để không dùng API cũ."
+    },
+    "thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking@2.1.1"],
+      "roles": ["ceo", "architect", "data_engineer", "security", "dev", "reviewer", "tester"],
+      "hint": "Suy nghĩ từng bước có cấu trúc (github.com/modelcontextprotocol/servers) cho vấn đề khó: thiết kế, gỡ lỗi, phân tích rủi ro."
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory@2.1.0"],
+      "env": { "MEMORY_FILE_PATH": "{root}/data/company-memory.jsonl" },
+      "roles": ["ceo", "pm", "ba", "architect", "data_engineer", "security", "designer", "dev", "reviewer", "tester", "devops"],
+      "hint": "Bộ nhớ chung của công ty qua các dự án (github.com/modelcontextprotocol/servers). Tra kinh nghiệm cũ khi bắt đầu; lưu bài học quan trọng (lỗi hay gặp, quyết định tốt) khi xong việc. Ngắn gọn."
+    }
+  }
+}

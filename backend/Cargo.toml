@@ -19,6 +19,7 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 dotenvy = "0.15"
 fastrand = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

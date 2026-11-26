@@ -69,6 +69,29 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
 
       {selected && (
         <div className="stack" onClick={(e) => e.stopPropagation()}>
+          <div className="row between">
+            <span className="small muted">{p.existing ? `Mã nguồn của khách: ${p.source}` : p.tech ? `Công nghệ: ${p.tech}` : "Công nghệ: PM tư vấn với bạn"}</span>
+            <a className="btn" href={`/api/projects/${p.id}/download`} download>
+              ⬇ Tải mã nguồn (.zip)
+            </a>
+          </div>
+          {p.versions?.length > 0 && (
+            <details className="versions">
+              <summary>Lịch sử phiên bản ({p.versions.length})</summary>
+              <ul>
+                {[...p.versions].reverse().map((v) => (
+                  <li key={v.n} className="row between small">
+                    <span>
+                      <b>v{v.n}</b> · {v.label} · {new Date(v.ts).toLocaleString("vi-VN")} · {v.files} tệp · {(v.size / 1024).toFixed(0)} KB
+                    </span>
+                    <a href={`/api/projects/${p.id}/versions/${v.n}`} download>
+                      ⬇ zip
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           {p.phase === "awaiting_approval" && (
             <div className="report">
               <b>Báo cáo của CEO</b>

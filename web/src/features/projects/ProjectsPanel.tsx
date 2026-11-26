@@ -10,6 +10,10 @@ export function ProjectsPanel() {
   const [request, setRequest] = useState("");
   const [name, setName] = useState("");
   const [budget, setBudget] = useState("");
+  const [srcMode, setSrcMode] = useState<"new" | "zip" | "git" | "local">("new");
+  const [zip, setZip] = useState<File | null>(null);
+  const [gitUrl, setGitUrl] = useState("");
+  const [localPath, setLocalPath] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   if (!state) return null;
@@ -19,11 +23,28 @@ export function ProjectsPanel() {
     setErr("");
     setBusy(true);
     try {
+      let uploadId = "";
+      if (srcMode === "zip") {
+        if (!zip) throw new Error("Hãy chọn tệp .zip mã nguồn");
+        const res = await fetch("/api/uploads", { method: "POST", headers: { "Content-Type": "application/zip" }, body: zip });
+        if (!res.ok) throw new Error(await res.text());
+        uploadId = ((await res.json()) as { id: string }).id;
+      }
+      if (srcMode === "git" && !gitUrl.trim()) throw new Error("Hãy nhập link Git");
+      if (srcMode === "local" && !localPath.trim()) throw new Error("Hãy nhập đường dẫn thư mục");
       const p = await api<Project>("POST", "/api/projects", {
         request,
         name,
         budgetUsd: budget ? Number(budget) : undefined,
+        uploadId,
+        uploadName: zip?.name ?? "",
+        gitUrl: srcMode === "git" ? gitUrl : "",
+        localPath: srcMode === "local" ? localPath : "",
       });
+      setZip(null);
+      setGitUrl("");
+      setLocalPath("");
+      setSrcMode("new");
       setRequest("");
       setName("");
       setBudget("");
@@ -41,7 +62,7 @@ export function ProjectsPanel() {
         <h3>Giao dự án mới cho CEO</h3>
         <textarea
           rows={4}
-          placeholder="Ví dụ: Làm cho tôi trang web quản lý chi tiêu cá nhân, có biểu đồ theo tháng…"
+          placeholder="Ví dụ: Làm cho tôi trang web quản lý chi tiêu cá nhân, có biểu đồ theo tháng… (hoặc với mã nguồn của khách: Thêm đăng nhập, sửa lỗi giỏ hàng…)"
           value={request}
           onChange={(e) => setRequest(e.target.value)}
         />
@@ -57,6 +78,33 @@ export function ProjectsPanel() {
             onChange={(e) => setBudget(e.target.value)}
           />
         </div>
+        <div className="src-mode">
+          <span className="small">Mã nguồn</span>
+          <div className="seg" role="radiogroup">
+            {(
+              [
+                ["new", "Làm mới"],
+                ["zip", "Tải .zip"],
+                ["git", "Link Git"],
+                ["local", "Thư mục máy"],
+              ] as const
+            ).map(([v, l]) => (
+              <button key={v} type="button" role="radio" aria-checked={srcMode === v} className={srcMode === v ? "primary" : "ghost"} onClick={() => setSrcMode(v)}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+        {srcMode === "zip" && (
+          <label className="file-pick">
+            <input type="file" accept=".zip,application/zip" onChange={(e) => setZip(e.target.files?.[0] ?? null)} />
+            <span className="btn">📁 Chọn tệp .zip</span>
+            <span className={`clip small ${zip ? "" : "muted"}`}>{zip ? `${zip.name} · ${(zip.size / 1024 / 1024).toFixed(1)} MB` : "Chưa chọn tệp"}</span>
+          </label>
+        )}
+        {srcMode === "git" && <input placeholder="https://github.com/ten/du-an.git" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />}
+        {srcMode === "local" && <input placeholder="Đường dẫn thư mục, vd. D:\du-an\cua-khach" value={localPath} onChange={(e) => setLocalPath(e.target.value)} />}
+        <p className="small muted">{srcMode === "new" ? "PM sẽ tư vấn và hỏi bạn chọn công nghệ bằng ngôn ngữ dễ hiểu. Bàn giao kèm tài liệu đặc tả và hướng dẫn sử dụng có ảnh chụp." : srcMode === "local" ? "Đội sửa TRỰC TIẾP trong thư mục này. Thư mục dùng Git thì xem / hoàn tác thay đổi bằng Git; chưa có Git thì bản gốc được tự lưu thành v1 (.zip) trong Lịch sử." : "Đội sẽ đọc hiểu mã nguồn trước, giữ công nghệ và cấu trúc sẵn có, rồi sửa / nâng cấp đúng theo yêu cầu ở trên."}</p>
         {err && <p className="error">{err}</p>}
         <button className="primary" disabled={busy || !request.trim()} onClick={submit}>
           Giao cho CEO

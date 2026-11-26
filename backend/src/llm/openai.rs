@@ -6,6 +6,16 @@ use serde_json::{json, Value};
 
 fn to_messages(system: &str, messages: &[LlmMessage]) -> Vec<Value> {
     let mut out = vec![json!({ "role": "system", "content": system })];
+    // Index of the first image still sent in full (older ones are replaced by a note).
+    let total: usize = messages
+        .iter()
+        .map(|m| match m {
+            LlmMessage::User { tool_results, .. } => tool_results.iter().map(|r| r.images.len()).sum(),
+            _ => 0,
+        })
+        .sum();
+    let keep_from = total.saturating_sub(super::KEEP_IMAGES);
+    let mut seen = 0usize;
     for m in messages {
         match m {
             LlmMessage::Assistant { text, tool_calls, .. } => {
@@ -22,9 +32,21 @@ fn to_messages(system: &str, messages: &[LlmMessage]) -> Vec<Value> {
                 out.push(msg);
             }
             LlmMessage::User { text, tool_results } => {
+                let mut parts: Vec<Value> = vec![];
                 for r in tool_results {
                     let content = if r.is_error { format!("LỖI: {}", r.content) } else { r.content.clone() };
                     out.push(json!({ "role": "tool", "tool_call_id": r.id, "content": content }));
+                    for (mime, data) in &r.images {
+                        if seen >= keep_from {
+                            parts.push(json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{data}") } }));
+                        }
+                        seen += 1;
+                    }
+                }
+                // Chat Completions can't put images in tool messages: attach them as a user turn.
+                if !parts.is_empty() {
+                    parts.insert(0, json!({ "type": "text", "text": "Ảnh chụp màn hình từ công cụ ở trên:" }));
+                    out.push(json!({ "role": "user", "content": parts }));
                 }
                 if let Some(t) = text {
                     out.push(json!({ "role": "user", "content": t }));
@@ -34,6 +56,9 @@ fn to_messages(system: &str, messages: &[LlmMessage]) -> Vec<Value> {
     }
     out
 }
+
+/// Tries per endpoint for network errors, 429 and 5xx.
+const MAX_ATTEMPTS: u32 = 6;
 
 pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
     let e = req.employee;
@@ -48,7 +73,7 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
         return Err(format!("Thiếu {} trong file .env", config::provider_env_key(e.provider).unwrap_or("API key")));
     }
 
-    let body = json!({
+    let mut body = json!({
         "model": e.model,
         "stream": false,
         "max_tokens": req.max_tokens,
@@ -58,27 +83,69 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
             "function": { "name": t.name, "description": t.description, "parameters": t.schema }
         })).collect::<Vec<_>>(),
     });
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let mut attempt = 0;
-    let data: Value = loop {
-        let mut rb = http().post(&url).json(&body);
-        if let Some(k) = &key {
-            rb = rb.bearer_auth(k);
+    if req.tools.is_empty() {
+        if let Some(o) = body.as_object_mut() {
+            o.remove("tools");
         }
-        let res = rb.send().await.map_err(|err| format!("{:?}: {err}", e.provider))?;
-        let status = res.status();
-        if status.is_success() {
-            break res.json().await.map_err(|err| format!("{:?}: {err}", e.provider))?;
+    }
+    // Backup endpoint (e.g. a local 9router) used when the primary one keeps failing.
+    let fallback = (e.provider == ProviderId::Custom)
+        .then(|| std::env::var("CUSTOM_FALLBACK_BASE_URL").ok())
+        .flatten()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty() && s != base.trim_end_matches('/'));
+    let mut bases = vec![base.trim_end_matches('/').to_string()];
+    bases.extend(fallback);
+    let mut last_err = String::new();
+    let mut data: Option<Value> = None;
+    'endpoints: for (bi, b) in bases.iter().enumerate() {
+        let url = format!("{b}/chat/completions");
+        for attempt in 0..MAX_ATTEMPTS {
+            let mut rb = http().post(&url).json(&body);
+            if let Some(k) = &key {
+                rb = rb.bearer_auth(k);
+            }
+            let wait = match rb.send().await {
+                // Network error / timeout: worth retrying.
+                Err(err) => {
+                    last_err = format!("{:?}: {err}", e.provider);
+                    backoff(attempt, None)
+                }
+                Ok(res) => {
+                    let status = res.status();
+                    if status.is_success() {
+                        match res.json::<Value>().await {
+                            Ok(v) => {
+                                data = Some(v);
+                                break 'endpoints;
+                            }
+                            Err(err) => {
+                                last_err = format!("{:?}: {err}", e.provider);
+                                backoff(attempt, None)
+                            }
+                        }
+                    } else {
+                        let retry_after = res.headers().get("retry-after").cloned();
+                        let text = res.text().await.unwrap_or_default();
+                        last_err = format!("{:?} {}: {}", e.provider, status.as_u16(), text.chars().take(600).collect::<String>());
+                        if !(status.as_u16() == 429 || status.is_server_error()) {
+                            // 4xx: the request itself is the problem; another endpoint won't help either.
+                            return Err(last_err);
+                        }
+                        // 9router says how long an account is cooling down ("reset after 1m 19s").
+                        super::reset_after(&text).unwrap_or_else(|| backoff(attempt, retry_after.as_ref()))
+                    }
+                }
+            };
+            if attempt + 1 < MAX_ATTEMPTS {
+                tokio::time::sleep(wait).await;
+            }
         }
-        let retry_after = res.headers().get("retry-after").cloned();
-        let text = res.text().await.unwrap_or_default();
-        if (status.as_u16() == 429 || status.is_server_error()) && attempt < 4 {
-            tokio::time::sleep(backoff(attempt, retry_after.as_ref())).await;
-            attempt += 1;
-            continue;
+        if bi + 1 < bases.len() {
+            eprintln!("Endpoint {b} lỗi liên tục, chuyển sang endpoint dự phòng");
         }
-        return Err(format!("{:?} {}: {}", e.provider, status.as_u16(), text.chars().take(600).collect::<String>()));
-    };
+    }
+    let Some(data) = data else { return Err(last_err) };
 
     let choice = &data["choices"][0];
     let msg = &choice["message"];
@@ -113,7 +180,13 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
         tool_calls,
         stop,
         input_tokens: data["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
-        output_tokens: data["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+        output_tokens: {
+            // Some proxies report thinking tokens separately instead of inside completion_tokens;
+            // they are billed as output, so count them.
+            let completion = data["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+            let reasoning = data["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0);
+            if reasoning > completion { completion + reasoning } else { completion }
+        },
         raw: None,
         raw_provider: None,
     })

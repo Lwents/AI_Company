@@ -142,6 +142,7 @@ async fn maintenance(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             break;
         }
     }
+    crate::history::snapshot(store, pid, "Bản sửa lỗi khi vận hành").await;
     // Close the loop with customers whose bug is fixed.
     let fixed: Vec<(String, String, Option<String>)> = store.with(|s| {
         s.cases

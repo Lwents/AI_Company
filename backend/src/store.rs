@@ -230,6 +230,15 @@ impl Store {
         self.emit(ServerEvent::Remove { coll: "employees", id: id.to_string() });
     }
 
+    /// The folder a project's files live in: the customer's own folder when working in place.
+    pub fn dir_of(&self, p: &Project) -> PathBuf {
+        if p.dir.trim().is_empty() {
+            self.workspace_dir.join(&p.slug)
+        } else {
+            PathBuf::from(&p.dir)
+        }
+    }
+
     pub fn project(&self, id: &str) -> Option<Project> {
         self.with(|s| s.projects.iter().find(|p| p.id == id).cloned())
     }

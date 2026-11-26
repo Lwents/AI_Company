@@ -49,7 +49,7 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     tag(ctx, s.x, s.y, scene.meeting.topic, fs * 0.85, C.white, C.outline, "center");
   }
   const chs = toScreen(scene, l.chairman.x, l.chairman.y + 16);
-  tag(ctx, chs.x, chs.y, "Bạn·Chủ tịch", fs, C.yellow, C.outline, "center");
+  tag(ctx, chs.x, chs.y, "Kiên·Chủ tịch", fs, C.yellow, C.outline, "center");
   const rcs = toScreen(scene, l.receptionist.x, l.receptionist.y + 16);
   tag(ctx, rcs.x, rcs.y, "Lễ tân", fs, "rgba(20,18,31,0.85)", C.cyan, "center");
 

@@ -14,6 +14,8 @@ export type Role =
   | "support"
   | "hr"
   | "accountant"
+  | "data_engineer"
+  | "security"
   | "legal";
 export type ProviderId = "mock" | "anthropic" | "openai" | "openrouter" | "gemini" | "ollama" | "custom";
 
@@ -87,9 +89,24 @@ export interface Project {
   error: string;
   ticketSeq: number;
   releaseRounds: number;
+  designReviews?: number;
+  qaRounds?: number;
+  autoRetries?: number;
   meetings: number;
+  tech: string;
+  versions: ProjectVersion[];
+  existing?: boolean;
+  source?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ProjectVersion {
+  n: number;
+  label: string;
+  ts: number;
+  size: number;
+  files: number;
 }
 
 export interface ChatMsg {
@@ -195,6 +212,10 @@ export interface Settings {
   defaultBudgetUsd: number;
   mockDelayMs: number;
   meetingRounds: number;
+  fallbackModel: string;
+  lightModel: string;
+  approveDesign: boolean;
+  autoRetries: number;
 }
 
 export interface CompanyState {

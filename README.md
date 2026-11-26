@@ -161,3 +161,19 @@ npm run typecheck             # kiểm tra kiểu frontend
 - Chạy lệnh trong Docker sandbox.
 - Âm thanh.
 - Lưu và tải nhiều "công ty" khác nhau.
+
+## Kỹ năng và MCP của nhân viên
+
+- `skills/*.md`: sổ tay nghề theo vai (`common.md` cho mọi kỹ sư, `designer.md`, `tester.md`, `dev.md`, `reviewer.md`, `architect.md`, `data_engineer.md`, `devops.md`). Được nạp vào mỗi lượt việc; sửa tệp là có hiệu lực từ lượt sau, không cần build lại.
+- `mcp.json`: các MCP server (định dạng giống Claude, thêm `roles`, `hint`, `exclude`). Mỗi lượt việc tự khởi động server hợp vai trò trong thư mục dự án và tắt khi xong. Mặc định:
+  - `browser` — [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp): trình duyệt Edge thật, chụp màn hình (model nhìn được ảnh).
+  - `docs` — [upstash/context7](https://github.com/upstash/context7): tài liệu mới nhất của thư viện.
+  - `thinking`, `memory` — [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers): suy nghĩ từng bước, bộ nhớ chung của công ty (`data/company-memory.jsonl`).
+- Nhân viên dùng provider Mock không khởi động MCP.
+
+## Quy trình đặc tả trước, code sau (học từ GitHub Spec Kit)
+
+- `docs/CONSTITUTION.md`: CEO viết sau họp khởi động — 5–10 nguyên tắc không được vi phạm; được đưa vào lời nhắc của MỌI nhân viên ở mọi bước.
+- `docs/CLARIFICATIONS.md`: BA tìm tối đa 5 điểm mơ hồ quan trọng và hỏi Chủ tịch một lần (có lựa chọn gợi ý) trước khi viết yêu cầu.
+- `docs/REQUIREMENTS.md`: mẫu chuẩn — user story P1/P2/P3, kịch bản Cho trước / Khi / Thì, yêu cầu FR-001…, tiêu chí thành công đo được SC-001…; ticket ghi rõ FR nó đáp ứng.
+- `docs/ANALYSIS.md`: trước khi code, BA đối chiếu yêu cầu ↔ kế hoạch ↔ kiến trúc ↔ ticket (FR chưa có ticket, ticket thừa, mâu thuẫn, vi phạm nguyên tắc) và bổ sung ticket còn thiếu.

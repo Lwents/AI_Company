@@ -52,7 +52,7 @@ export function ChatPanel() {
           const f = who(m.from);
           const t = who(m.to);
           return (
-            <div key={m.id} className={`msg ${m.kind}`}>
+            <div key={m.id} className={`msg kind-${m.kind}`}>
               <div className="meta">
                 <span className="dot" style={{ background: f.color }} />
                 <b>{f.name}</b>

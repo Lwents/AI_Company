@@ -16,6 +16,8 @@ export const ROLE_LABEL: Record<Role, string> = {
   support: "CSKH",
   hr: "Nhân sự",
   accountant: "Kế toán",
+  data_engineer: "Data Engineer",
+  security: "Security",
   legal: "Pháp chế",
 };
 
@@ -38,13 +40,15 @@ export const ROLE_JOB: Record<Role, string> = {
   support: "Trả lời khách, FAQ, chuyển lỗi cho kỹ thuật, báo lại khách",
   hr: "Đánh giá nhân viên theo KPI, đề xuất tuyển người",
   accountant: "Báo cáo thu – chi – lãi lỗ từ số liệu thật",
+  data_engineer: "Mô hình dữ liệu, lưu trữ, migration, sao lưu, chỉ số",
+  security: "Kiểm tra bảo mật, lỗ hổng thư viện, bí mật bị lộ; chặn phát hành khi nguy hiểm",
   legal: "Điều khoản sử dụng, chính sách bảo mật, rủi ro pháp lý",
 };
 
 /** Departments, for grouping staff. */
 export const DEPARTMENTS: Array<{ label: string; roles: Role[] }> = [
   { label: "Ban điều hành", roles: ["ceo", "secretary"] },
-  { label: "Sản phẩm & Kỹ thuật", roles: ["pm", "ba", "designer", "architect", "dev", "reviewer", "tester", "devops"] },
+  { label: "Sản phẩm & Kỹ thuật", roles: ["pm", "ba", "designer", "architect", "data_engineer", "dev", "reviewer", "tester", "devops", "security"] },
   { label: "Kinh doanh", roles: ["marketing", "sales", "support"] },
   { label: "Hành chính", roles: ["hr", "accountant", "legal"] },
 ];

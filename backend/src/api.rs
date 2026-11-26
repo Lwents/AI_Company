@@ -24,9 +24,12 @@ pub fn router(store: S) -> Router {
         .route("/api/state", get(get_state))
         .route("/ws", get(ws))
         .route("/api/projects", post(create_project))
+        .route("/api/uploads", post(upload_source).layer(axum::extract::DefaultBodyLimit::max(300 * 1024 * 1024)))
         .route("/api/projects/{id}", axum::routing::delete(delete_project))
         .route("/api/projects/{id}/files", get(project_files))
         .route("/api/projects/{id}/file", get(project_file))
+        .route("/api/projects/{id}/download", get(download_source))
+        .route("/api/projects/{id}/versions/{n}", get(download_version))
         .route("/api/projects/{id}/{action}", post(project_action))
         .route("/api/approvals/{id}", post(resolve_approval))
         .route("/api/employees", post(create_employee))
@@ -120,6 +123,19 @@ struct NewProject {
     #[serde(default)]
     name: String,
     budget_usd: Option<f64>,
+    #[serde(default)]
+    tech: String,
+    /// Id returned by POST /api/uploads (a .zip of the customer's code).
+    #[serde(default)]
+    upload_id: String,
+    #[serde(default)]
+    upload_name: String,
+    /// Or: a Git repository to clone.
+    #[serde(default)]
+    git_url: String,
+    /// Or: a folder on this computer (copied, the original is left alone).
+    #[serde(default)]
+    local_path: String,
 }
 
 fn slugify(s: &str) -> String {
@@ -179,13 +195,74 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         error: String::new(),
         ticket_seq: 0,
         release_rounds: 0,
+        design_reviews: 0,
+        qa_rounds: 0,
+        security_reviews: 0,
+        auto_retries: 0,
         meetings: 0,
+        tech: body.tech.trim().chars().take(300).collect(),
+        versions: vec![],
+        existing: false,
+        source: String::new(),
+        dir: String::new(),
         created_at: now_ms(),
         updated_at: now_ms(),
     };
+    let mut p = p;
+    // The customer's existing code goes into the project folder before anyone starts.
+    let upload_id: String = body.upload_id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let local = body.local_path.trim().trim_matches('"').to_string();
+    if !upload_id.is_empty() || !body.git_url.trim().is_empty() || !local.is_empty() {
+        let dir = store.workspace_dir.join(&p.slug);
+        let res = if !upload_id.is_empty() {
+            let file = store.data_dir.join("uploads").join(format!("{upload_id}.zip"));
+            let bytes = tokio::fs::read(&file).await.map_err(|_| bad("Không tìm thấy tệp đã tải lên, hãy tải lại"))?;
+            let d = dir.clone();
+            let r = tokio::task::spawn_blocking(move || crate::import::extract_zip(&bytes, &d)).await.map_err(|e| bad(e.to_string()))?;
+            let _ = tokio::fs::remove_file(&file).await;
+            p.source = if body.upload_name.trim().is_empty() { "Tệp .zip".into() } else { body.upload_name.trim().chars().take(120).collect() };
+            r.map(|_| ())
+        } else if !local.is_empty() {
+            // Work directly in the customer's folder (a v1 zip of the original is kept in the history).
+            let root = store.data_dir.parent().map(|r| r.to_path_buf()).unwrap_or_default();
+            crate::import::check_local(std::path::Path::new(&local), &[root]).map(|abs| {
+                p.source = abs.display().to_string();
+                p.dir = abs.display().to_string();
+            })
+        } else {
+            p.source = body.git_url.trim().to_string();
+            crate::import::git_clone(&body.git_url, &dir).await
+        };
+        if let Err(e) = res {
+            // Only ever clean up our own workspace folder, never the customer's.
+            if p.dir.is_empty() {
+                let _ = tokio::fs::remove_dir_all(&dir).await;
+            }
+            return Err(bad(e));
+        }
+        p.existing = true;
+    }
     store.insert_project(p.clone());
+    // Keep the original as v1, except for the customer's own folder under Git (Git already has the history).
+    let under_git = !p.dir.is_empty() && std::path::Path::new(&p.dir).join(".git").exists();
+    if p.existing && !under_git {
+        let label = if p.dir.is_empty() { "Mã nguồn gốc của khách" } else { "Bản gốc trước khi sửa (thư mục của khách)" };
+        crate::history::snapshot(&store, &id, label).await;
+    }
     workflow::start(&store, &id);
-    Ok(Json(json!(p)))
+    Ok(Json(json!(store.project(&id).unwrap_or(p))))
+}
+
+/// A customer's source code (.zip, raw body). Returns an id to pass to POST /api/projects.
+async fn upload_source(State(store): State<S>, body: axum::body::Bytes) -> ApiResult {
+    if body.len() < 22 || &body[..2] != b"PK" {
+        return Err(bad("Chỉ nhận tệp .zip"));
+    }
+    let id = new_id();
+    let dir = store.data_dir.join("uploads");
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| bad(e.to_string()))?;
+    tokio::fs::write(dir.join(format!("{id}.zip")), &body).await.map_err(|e| bad(e.to_string()))?;
+    Ok(Json(json!({ "id": id, "size": body.len() })))
 }
 
 #[derive(Deserialize, Default)]
@@ -257,6 +334,9 @@ async fn project_action(State(store): State<S>, Path((id, action)): Path<(String
                 p.feedback.push(fb.trim().to_string());
                 p.phase = Phase::Plan;
                 p.release_rounds = 0;
+                p.design_reviews = 0;
+                p.qa_rounds = 0;
+                p.security_reviews = 0;
             });
             workflow::start(&store, &id);
         }
@@ -280,7 +360,7 @@ async fn delete_project(State(store): State<S>, Path(id): Path<String>) -> ApiRe
 
 fn project_dir(store: &S, id: &str) -> Result<std::path::PathBuf, (StatusCode, String)> {
     let p = store.project(id).ok_or_else(|| bad("Dự án không tồn tại"))?;
-    Ok(store.workspace_dir.join(p.slug))
+    Ok(store.dir_of(&p))
 }
 
 async fn project_files(State(store): State<S>, Path(id): Path<String>) -> ApiResult {
@@ -330,8 +410,53 @@ fn mime(path: &str) -> &'static str {
 /// Folders with internal company documents (never served on the public address).
 const INTERNAL: [&str; 9] = ["docs/", "finance/", "hr/", "sales/", "support/", "legal/notes", "tests/", "design/", ".git/"];
 
+fn zip_response(name: &str, bytes: Vec<u8>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// The project's current source code as a zip.
+async fn download_source(State(store): State<S>, Path(id): Path<String>) -> Response {
+    let Some(p) = store.project(&id) else { return (StatusCode::NOT_FOUND, "Dự án không tồn tại").into_response() };
+    let dir = store.dir_of(&p);
+    let slug = p.slug.clone();
+    match tokio::task::spawn_blocking(move || crate::history::zip_dir(&dir, &slug)).await {
+        Ok(Ok((bytes, _))) => zip_response(&format!("{}.zip", p.slug), bytes),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// A frozen version from the project's history.
+async fn download_version(State(store): State<S>, Path((id, n)): Path<(String, u32)>) -> Response {
+    let Some(p) = store.project(&id) else { return (StatusCode::NOT_FOUND, "Dự án không tồn tại").into_response() };
+    match tokio::fs::read(crate::history::version_file(&store, &p.slug, n)).await {
+        Ok(bytes) => zip_response(&format!("{}-v{n}.zip", p.slug), bytes),
+        Err(_) => (StatusCode::NOT_FOUND, "Không tìm thấy phiên bản").into_response(),
+    }
+}
+
 async fn serve_preview(store: S, id: String, path: String) -> Response {
-    let Ok(dir) = project_dir(&store, &id) else { return StatusCode::NOT_FOUND.into_response() };
+    let Ok(mut dir) = project_dir(&store, &id) else { return StatusCode::NOT_FOUND.into_response() };
+    // Projects with a build step (Vite, …) are previewed from their build output.
+    for out in ["dist", "build"] {
+        let built = dir.join(out);
+        if built.join("index.html").is_file() {
+            let rel = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path.clone() };
+            // Only fall back to the source tree for files the build doesn't have (design/mockup.html…).
+            if built.join(&rel).is_file() || !dir.join(&rel).is_file() {
+                dir = built;
+            }
+            break;
+        }
+    }
     let path = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path };
     let Ok(file) = safe_path(&dir, &path) else { return StatusCode::BAD_REQUEST.into_response() };
     match tokio::fs::read(&file).await {
@@ -420,6 +545,9 @@ async fn delete_employee(State(store): State<S>, Path(id): Path<String>) -> ApiR
 async fn update_settings(State(store): State<S>, Json(mut s): Json<Settings>) -> ApiResult {
     s.max_concurrent = s.max_concurrent.clamp(1, 16);
     s.meeting_rounds = s.meeting_rounds.min(5);
+    s.auto_retries = s.auto_retries.min(10);
+    s.fallback_model = s.fallback_model.trim().to_string();
+    s.light_model = s.light_model.trim().to_string();
     s.max_agent_steps = s.max_agent_steps.clamp(3, 200);
     s.max_bounces = s.max_bounces.min(10);
     s.mock_delay_ms = s.mock_delay_ms.min(10_000);
