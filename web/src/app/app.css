@@ -233,3 +233,15 @@ nav button.on {
     font-size: 18px;
   }
 }
+
+/* Settings: MCP switches */
+.mcp-list li {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line, #333);
+}
+.mcp-list li:last-child {
+  border-bottom: 0;
+}
+.mcp-list p {
+  margin: 4px 0 0 26px;
+}

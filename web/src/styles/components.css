@@ -313,3 +313,56 @@ td {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Markdown written by employees (shared/Markdown.tsx). */
+.md {
+  white-space: normal;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+}
+.md ul,
+.md ol {
+  margin: 0 0 6px;
+  padding-left: 20px;
+}
+.md li {
+  margin: 2px 0;
+}
+.md li > ul,
+.md li > ol {
+  margin: 2px 0 0;
+}
+.md b {
+  color: var(--accent-hi);
+  font-weight: normal;
+}
+.md i {
+  color: var(--text);
+}
+.md code {
+  background: var(--panel);
+  padding: 0 4px;
+}
+.md-h {
+  margin: 8px 0 4px;
+  color: var(--accent-hi);
+}
+.md-h1 {
+  font-size: 1.25em;
+}
+.md-h2 {
+  font-size: 1.12em;
+}
+.md hr {
+  border: 0;
+  border-top: 1px dashed var(--line);
+  margin: 8px 0;
+}

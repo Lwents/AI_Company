@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { time } from "@/shared/format";
+import { Markdown } from "@/shared/Markdown";
 import type { Approval } from "@/api/types";
 
 const KIND = { command: "Chạy lệnh", budget: "Ngân sách", question: "Câu hỏi", deal: "Chốt đơn", hire: "Tuyển dụng" } as const;
@@ -48,7 +49,7 @@ function PendingCard({ a }: { a: Approval }) {
       <p className="small muted">
         Từ {emp?.name ?? a.employeeId} · {time(a.ts)}
       </p>
-      {a.kind === "command" ? <pre className="code">{a.detail}</pre> : <p className="read">{a.detail}</p>}
+      {a.kind === "command" ? <pre className="code">{a.detail}</pre> : <Markdown className="read" text={a.detail} />}
       {a.kind === "question" ? (
         <>
           <textarea rows={3} placeholder="Trả lời CEO…" value={answer} onChange={(e) => setAnswer(e.target.value)} />

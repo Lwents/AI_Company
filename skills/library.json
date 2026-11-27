@@ -1,0 +1,30 @@
+{
+  "_comment": "Thư viện skill (skills/library/<tên>/SKILL.md). 'roles' gán skill theo VAI TRÒ và BƯỚC (phase) theo thứ tự quy trình; '*' = mọi bước; ghi thẳng một danh sách = mọi bước. Nhân viên chỉ thấy tên + mô tả 'skills' của bước hiện tại và chỉ đọc được các skill đó bằng read_skill. Nguồn gốc skill: skills/library/SOURCES.txt",
+  "skills": {
+    "ui-ux-pro-max": "BƯỚC 1 – Hệ thống thiết kế & kế hoạch UX: quy tắc theo mức ưu tiên (truy cập, chạm, hiệu năng, bố cục, chữ, màu, chuyển động, form). Không có công cụ search: đọc references/quick-reference.md, references/pro-rules.md và tra bảng data/*.csv (styles, colors, typography, landing, ux-guidelines…) khi cần.",
+    "design-taste-frontend": "BƯỚC 2 – Hướng thị giác & bố cục sáng tạo chống 'mùi AI': loại hình doanh nghiệp quyết định bố cục trang, kế hoạch từng section, checklist và danh sách điều cấm. Tham khảo references/ (sections, motion, copy, layout…).",
+    "frontend-design": "Bổ trợ bước 2 – Chọn phong cách có chủ đích bám theo chủ đề sản phẩm, typography khác biệt, quy trình lên kế hoạch → làm → tự phê bình; tiết chế, tránh mặc định đại trà.",
+    "high-end-visual-design": "Bổ trợ bước 2 (CHỈ khi chọn phong cách êm, sang, nhiều khoảng trắng): vi chi tiết thành phần cao cấp, biên đạo chuyển động mượt, giới hạn hiệu năng, checklist trước khi giao.",
+    "emil-design-eng": "BƯỚC 3 – Chuyển động & vi tương tác: khi nào nên animate, spring, transform/clip-path, kéo thả, stagger, hiệu năng và khả năng truy cập của animation; trạng thái hover/nhấn, thời gian tooltip, gốc popover.",
+    "impeccable": "BƯỚC 4 – Tinh chỉnh thị giác: soi kỹ, đánh giá (critique, audit), polish, distill (bỏ rườm rà), harden (đủ trạng thái/lỗi), typeset, layout, colorize. Đọc tệp reference/<lệnh>.md đúng việc (vd. reference/polish.md, reference/audit.md).",
+    "web-design-guidelines": "BƯỚC 5 – Rà soát chất lượng cuối theo Web Interface Guidelines (Vercel): truy cập, focus, form, ảnh, hiệu năng, điều hướng. Đọc references/command.md rồi đối chiếu, báo lỗi dạng tệp:dòng."
+  },
+  "roles": {
+    "designer": {
+      "design": [
+        "ui-ux-pro-max",
+        "design-taste-frontend",
+        "frontend-design",
+        "high-end-visual-design",
+        "emil-design-eng",
+        "impeccable",
+        "web-design-guidelines"
+      ],
+      "design_review": [
+        "impeccable",
+        "web-design-guidelines",
+        "emil-design-eng"
+      ]
+    }
+  }
+}

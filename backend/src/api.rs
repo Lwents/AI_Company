@@ -43,6 +43,7 @@ pub fn router(store: S) -> Router {
         .route("/api/resources", get(resource_accounts))
         .route("/api/resources/{src}/{id}", get(resource_quota))
         .route("/api/settings", put(update_settings))
+        .route("/api/mcp", get(mcp_servers))
         .route("/api/chat", post(chairman_chat))
         .route("/preview/{id}/{*path}", get(preview))
         .route("/preview/{id}/", get(preview_index))
@@ -614,6 +615,16 @@ async fn delete_employee(State(store): State<S>, Path(id): Path<String>) -> ApiR
     Ok(Json(json!({ "ok": true })))
 }
 
+fn company_root(store: &S) -> std::path::PathBuf {
+    store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+}
+
+/// MCP servers from mcp.json with their current on/off state, for the Settings tab.
+async fn mcp_servers(State(store): State<S>) -> Json<Value> {
+    let overrides = store.with(|s| s.settings.mcp.clone());
+    Json(json!({ "servers": crate::mcp::overview(&company_root(&store), &overrides) }))
+}
+
 async fn update_settings(State(store): State<S>, Json(mut s): Json<Settings>) -> ApiResult {
     s.max_concurrent = s.max_concurrent.clamp(1, 16);
     s.meeting_rounds = s.meeting_rounds.min(5);
@@ -623,6 +634,9 @@ async fn update_settings(State(store): State<S>, Json(mut s): Json<Settings>) ->
     s.max_agent_steps = s.max_agent_steps.clamp(3, 200);
     s.max_bounces = s.max_bounces.min(10);
     s.mock_delay_ms = s.mock_delay_ms.min(10_000);
+    // Keep only servers that exist in mcp.json.
+    let known = crate::mcp::load_config(&company_root(&store));
+    s.mcp.retain(|name, _| known.contains_key(name));
     store.resize_llm_slots(s.max_concurrent);
     store.with(|st| st.settings = s.clone());
     store.emit(ServerEvent::Settings { settings: s.clone() });

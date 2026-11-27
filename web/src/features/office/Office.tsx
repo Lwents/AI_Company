@@ -136,14 +136,20 @@ export function Office() {
         }}
       />
       <div className="zoom-ctl">
-        <button title="Phóng to" onClick={() => zoomStep(scene, canvas(), true)}>
-          +
+        <button title="Phóng to" aria-label="Phóng to" onClick={() => zoomStep(scene, canvas(), true)}>
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M4 1h2v3h3v2H6v3H4V6H1V4h3z" />
+          </svg>
         </button>
-        <button title="Thu nhỏ" onClick={() => zoomStep(scene, canvas(), false)}>
-          −
+        <button title="Thu nhỏ" aria-label="Thu nhỏ" onClick={() => zoomStep(scene, canvas(), false)}>
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M1 4h8v2H1z" />
+          </svg>
         </button>
-        <button title="Vừa khung" onClick={() => resetCamera(scene)}>
-          ⤢
+        <button title="Vừa khung" aria-label="Vừa khung" onClick={() => resetCamera(scene)}>
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M0 0h4v2H2v2H0zM6 0h4v4H8V2H6zM0 6h2v2h2v2H0zM8 6h2v4H6V8h2z" />
+          </svg>
         </button>
       </div>
     </div>

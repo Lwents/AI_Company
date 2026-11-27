@@ -168,6 +168,10 @@ fn describe_call(name: &str, input: &serde_json::Value) -> String {
             _ => format!("Đọc {}", g("path")),
         },
         "list_files" => "Xem danh sách tệp".into(),
+        "read_skill" => match g("file").trim() {
+            "" => format!("Đọc skill {}", g("name")),
+            f => format!("Đọc skill {} › {f}", g("name")),
+        },
         "run_command" => format!("$ {}", g("command")),
         "create_ticket" => format!("Tạo ticket: {}", g("title")),
         "message_colleague" => format!("Nhắn {}", g("to_role")),
@@ -451,7 +455,18 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
     // Skills (role playbooks + per-employee custom skills) and MCP servers (browser, docs, …) for this role.
     let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     system.push_str(&crate::skills::for_employee(&root, &emp));
-    let mut mcp = if emp.provider == ProviderId::Mock { None } else { Some(crate::mcp::Session::start(&root, &dir, emp.role, job.phase).await) };
+    // Skill library (design guides etc.): listed by name, read in full on demand with read_skill.
+    let library = crate::skills::library_prompt(&root, emp.role, job.phase);
+    if !library.is_empty() && !crate::mcp::light_phase(job.phase) {
+        system.push_str(&library);
+        tools.push(crate::tools::read_skill_tool());
+    }
+    let mcp_overrides = store.with(|s| s.settings.mcp.clone());
+    let mut mcp = if emp.provider == ProviderId::Mock {
+        None
+    } else {
+        Some(crate::mcp::Session::start(&root, &dir, emp.role, job.phase, &mcp_overrides).await)
+    };
     if let Some(m) = &mcp {
         for t in &m.tools {
             tools.push(llm::ToolDef { name: t.name.clone(), description: t.description.clone(), schema: t.schema.clone() });
@@ -492,6 +507,7 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         last_write: None,
         read_ranges: std::collections::HashMap::new(),
         read_files: std::collections::HashMap::new(),
+        phase: job.phase,
     };
     let pid = Some(project.id.as_str());
     let tid = job.ticket_id.as_deref();

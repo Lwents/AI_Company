@@ -4,6 +4,7 @@
 - Khi sửa tệp dài (> 150 dòng): dùng `read_file` kèm `start_line`/`end_line` để đọc đúng đoạn cần sửa, rồi dùng `edit_file` để vá chính xác thay vì viết lại toàn bộ tệp bằng `write_file`.
 - Tra tài liệu mới nhất của thư viện bằng docs__ trước khi dùng API bạn không chắc.
 - Code sạch: hàm nhỏ, tên rõ nghĩa, không lặp, xử lý lỗi rõ ràng, kiểu dữ liệu chặt (TypeScript strict nếu dùng TS), không để code chết / console.log thừa.
+- Component / hiệu ứng mà DESIGN.md chỉ định từ shadcn/ui, Magic UI, Aceternity UI, React Bits, 21st.dev: tra mã nguồn / tài liệu mới nhất (docs__) rồi đưa vào dự án theo đúng cách thư viện hướng dẫn, chỉnh theo tokens; chỉ khi dự án là React + Tailwind. Animation dùng transform/opacity, tôn trọng prefers-reduced-motion.
 - Giao diện: chỉ dùng biến trong tokens, không tự chế màu / khoảng cách; làm đủ trạng thái (loading, rỗng, lỗi, disabled); responsive; truy cập được bằng bàn phím; chống XSS (không chèn HTML chưa lọc).
 - Tự kiểm trước khi báo xong: chạy lint / typecheck / test / build; mở bản xem thử bằng trình duyệt (browser__) làm thử đúng luồng của ticket và xem console không có lỗi.
 - Viết hoặc cập nhật unit test cho logic mới, đặt cạnh module.

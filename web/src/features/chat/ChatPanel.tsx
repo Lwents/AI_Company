@@ -3,6 +3,7 @@ import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { ROLE_LABEL } from "@/shared/labels";
 import { time } from "@/shared/format";
+import { Markdown } from "@/shared/Markdown";
 import "./chat.css";
 
 const KIND: Record<string, string> = {
@@ -61,7 +62,7 @@ export function ChatPanel() {
                 {KIND[m.kind] && <span className="pill small-pill">{KIND[m.kind]}</span>}
                 <span className="muted right">{time(m.ts)}</span>
               </div>
-              <div className="text">{m.text}</div>
+              <Markdown className="text" text={m.text} />
             </div>
           );
         })}

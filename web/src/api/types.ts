@@ -219,6 +219,18 @@ export interface Settings {
   lightModel: string;
   approveDesign: boolean;
   autoRetries: number;
+  /** MCP servers switched on/off here, overriding mcp.json. */
+  mcp: Record<string, boolean>;
+}
+
+export interface McpServer {
+  name: string;
+  enabled: boolean;
+  defaultEnabled: boolean;
+  roles: string[];
+  hint: string;
+  /** Runs on the server's operating system (desktop is Windows only). */
+  available: boolean;
 }
 
 export interface CompanyState {

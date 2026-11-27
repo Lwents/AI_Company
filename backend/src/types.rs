@@ -437,6 +437,8 @@ pub struct Settings {
     pub light_model: String,
     /// The chairman approves the design mockup before anything is built.
     pub approve_design: bool,
+    /// MCP servers switched on/off from the UI, overriding `enabled` in mcp.json (name -> on).
+    pub mcp: HashMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -453,6 +455,7 @@ impl Default for Settings {
             auto_retries: 3,
             light_model: String::new(),
             approve_design: true,
+            mcp: HashMap::new(),
         }
     }
 }

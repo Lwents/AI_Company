@@ -77,6 +77,24 @@ pub fn load_config(root: &Path) -> HashMap<String, ServerConfig> {
         .unwrap_or_default()
 }
 
+/// Servers in mcp.json for the Settings tab: name, on/off (after overrides), roles, hint, runs on this OS.
+pub fn overview(root: &Path, overrides: &HashMap<String, bool>) -> Vec<Value> {
+    let mut list: Vec<_> = load_config(root).into_iter().collect();
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list.into_iter()
+        .map(|(name, c)| {
+            json!({
+                "name": name,
+                "enabled": overrides.get(&name).copied().unwrap_or(c.enabled),
+                "defaultEnabled": c.enabled,
+                "roles": c.roles,
+                "hint": c.hint,
+                "available": c.for_this_os(),
+            })
+        })
+        .collect()
+}
+
 pub fn role_key(r: Role) -> String {
     serde_json::to_value(r).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }
@@ -177,6 +195,10 @@ fn clean_schema(mut v: Value) -> Value {
 }
 
 /// Light / coordination phases that never need external MCP servers (saves spawning npx/browser per turn).
+pub fn light_phase(phase: &str) -> bool {
+    skip_mcp_for_phase(phase)
+}
+
 fn skip_mcp_for_phase(phase: &str) -> bool {
     matches!(
         phase,
@@ -199,7 +221,8 @@ fn desktop_phase(phase: &str) -> bool {
 
 impl Session {
     /// Starts every enabled server meant for `role` and `phase` in parallel. Servers that fail to start are skipped.
-    pub async fn start(root: &Path, dir: &Path, role: Role, phase: &str) -> Session {
+    /// `overrides` (from Settings) switch servers on/off over their `enabled` in mcp.json.
+    pub async fn start(root: &Path, dir: &Path, role: Role, phase: &str, overrides: &HashMap<String, bool>) -> Session {
         let mut s = Session { conns: HashMap::new(), tools: vec![], hints: vec![] };
         if skip_mcp_for_phase(phase) {
             return s;
@@ -208,7 +231,7 @@ impl Session {
         let mut servers: Vec<(String, ServerConfig)> = load_config(root)
             .into_iter()
             .filter(|(name, c)| {
-                c.enabled
+                overrides.get(name).copied().unwrap_or(c.enabled)
                     && c.for_this_os()
                     && (c.roles.is_empty() || c.roles.iter().any(|r| r == &rk))
                     && (name != "browser" || browser_phase(phase))
@@ -399,7 +422,7 @@ mod tests {
     async fn mcp_live() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
         let dir = std::env::temp_dir();
-        let mut s = Session::start(&root, &dir, Role::Tester, "test").await;
+        let mut s = Session::start(&root, &dir, Role::Tester, "test", &HashMap::new()).await;
         let mut names: Vec<_> = s.tools.iter().map(|t| t.name.clone()).collect();
         names.sort();
         println!("{} tools: {:?}", names.len(), names);

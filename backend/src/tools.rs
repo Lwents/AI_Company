@@ -36,6 +36,8 @@ pub struct Ctx {
     pub read_ranges: std::collections::HashMap<(String, usize, usize), u32>,
     /// Tracks total read calls per file since it was last written.
     pub read_files: std::collections::HashMap<String, u32>,
+    /// Workflow phase of this job (decides which library skills may be read).
+    pub phase: &'static str,
 }
 
 fn tool(name: &str, description: &str, schema: Value) -> ToolDef {
@@ -208,6 +210,21 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
     t
 }
 
+/// Offered only to roles that have library skills (see skills::library_prompt).
+pub fn read_skill_tool() -> ToolDef {
+    tool(
+        "read_skill",
+        "Đọc một skill trong Thư viện kỹ năng của bạn. Bỏ trống file = đọc SKILL.md (kèm danh sách tệp tham khảo); file = đường dẫn tệp tham khảo bên trong skill.",
+        obj(
+            json!({
+                "name": { "type": "string", "description": "Tên skill, vd frontend-design" },
+                "file": { "type": "string", "description": "Tệp tham khảo trong skill (tùy chọn), vd reference/typography.md" }
+            }),
+            &["name"],
+        ),
+    )
+}
+
 /// Resolve a model-supplied relative path inside the project directory, rejecting escapes.
 pub fn safe_path(dir: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim().replace('\\', "/");
@@ -293,6 +310,10 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
     let pid = ctx.project_id.clone();
     let me = ctx.employee.clone();
     match name {
+        "read_skill" => {
+            let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            crate::skills::read_library(&root, me.role, ctx.phase, s(input, "name"), s(input, "file"))
+        }
         "list_files" => {
             let dir = safe_path(&ctx.dir, s(input, "dir"))?;
             let files = list_dir(&dir, 300);

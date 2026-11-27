@@ -1,8 +1,69 @@
 import { useEffect, useState } from "react";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
-import { PROVIDER_LABEL } from "@/shared/labels";
-import type { ProviderId, Settings } from "@/api/types";
+import { PROVIDER_LABEL, ROLE_LABEL } from "@/shared/labels";
+import type { McpServer, ProviderId, Role, Settings } from "@/api/types";
+
+const MCP_INFO: Record<string, [string, string]> = {
+  browser: ["Trình duyệt", "Mở bản xem thử, bấm, gõ, chụp màn hình và đọc lỗi như người dùng thật."],
+  desktop: ["Điều khiển máy tính", "Mở và thao tác ứng dụng Windows / giả lập để test thật. Chỉ chạy trên Windows."],
+  docs: ["Tài liệu thư viện", "Tra tài liệu mới nhất của thư viện trước khi viết code."],
+  memory: ["Bộ nhớ công ty", "Ghi nhớ bài học và kinh nghiệm qua các dự án."],
+  thinking: ["Suy nghĩ từng bước", "Ghi lại từng bước suy nghĩ cho vấn đề khó. Tốn thêm lượt gọi model."],
+};
+
+/** MCP servers from mcp.json, each switched on/off immediately (applies from the next job). */
+function McpSection() {
+  const { state } = useStore();
+  const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [err, setErr] = useState("");
+  const load = () =>
+    api<{ servers: McpServer[] }>("GET", "/api/mcp")
+      .then((r) => setServers(r.servers))
+      .catch((e) => setErr(String((e as Error).message)));
+  useEffect(() => {
+    load();
+  }, []);
+  const toggle = async (s: McpServer, on: boolean) => {
+    if (!state) return;
+    const mcp = { ...(state.settings.mcp ?? {}) };
+    if (on === s.defaultEnabled) delete mcp[s.name];
+    else mcp[s.name] = on;
+    setServers((list) => list?.map((x) => (x.name === s.name ? { ...x, enabled: on } : x)) ?? null);
+    try {
+      await api("PUT", "/api/settings", { ...state.settings, mcp });
+      setErr("");
+    } catch (e) {
+      setErr(String((e as Error).message));
+      load();
+    }
+  };
+  const roles = (r: string[]) => (r.length ? r.map((k) => ROLE_LABEL[k as Role] ?? k).join(", ") : "Mọi nhân viên");
+
+  return (
+    <section className="card">
+      <h3>Công cụ MCP</h3>
+      <p className="small muted">Bật / tắt công cụ cho nhân viên. Áp dụng từ lượt việc tiếp theo, không cần khởi động lại.</p>
+      {err && <p className="small warn">{err}</p>}
+      {!servers && !err && <p className="small muted">Đang tải…</p>}
+      {servers?.length === 0 && <p className="small muted">Chưa có MCP nào trong mcp.json.</p>}
+      <ul className="plain mcp-list">
+        {servers?.map((s) => (
+          <li key={s.name}>
+            <label className="row">
+              <input type="checkbox" checked={s.enabled} disabled={!s.available} onChange={(e) => toggle(s, e.target.checked)} />
+              <b>{MCP_INFO[s.name]?.[0] ?? s.name}</b>
+              <code className="small muted">{s.name}</code>
+              {!s.available && <span className="small muted">(không chạy trên máy chủ này)</span>}
+            </label>
+            <p className="small muted">{MCP_INFO[s.name]?.[1] ?? s.hint.slice(0, 140)}</p>
+            <p className="small">Dùng cho: {roles(s.roles)}</p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 export function SettingsPanel() {
   const { state, providers } = useStore();
@@ -15,7 +76,8 @@ export function SettingsPanel() {
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft({ ...draft, [k]: v });
   const save = async () => {
     try {
-      await api("PUT", "/api/settings", draft);
+      // MCP switches save themselves; keep the live ones rather than this draft's copy.
+      await api("PUT", "/api/settings", { ...draft, mcp: state?.settings.mcp ?? {} });
       setMsg("Đã lưu");
     } catch (e) {
       setMsg(String((e as Error).message));
@@ -80,6 +142,7 @@ export function SettingsPanel() {
           {msg && <span className="small muted">{msg}</span>}
         </div>
       </section>
+      <McpSection />
       <section className="card">
         <h3>Khóa API</h3>
         <p className="small muted">
