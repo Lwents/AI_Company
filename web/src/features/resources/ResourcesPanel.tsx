@@ -207,14 +207,28 @@ export function ResourcesPanel() {
   );
 }
 
+function fmtSecs(s?: number): string {
+  if (!s || s <= 0) return "";
+  if (s < 90) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return r ? `${m}p${String(r).padStart(2, "0")}s` : `${m}p`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `${h}g${mm}p` : `${h}g`;
+}
+
+const shortModel = (m?: string) => (m || "").replace(/^opencode\//, "");
+
 function XoaySection() {
   const [st, setSt] = useState<XoayStatus | null>(null);
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [autoPoll, setAutoPoll] = useState(true);
-  const [showCfg, setShowCfg] = useState(true);
-  const [showLogs, setShowLogs] = useState(true);
+  const [showCfg, setShowCfg] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
 
   // Local editable form fields (synced once from server or after save, never clobbered mid-edit).
   const [dirty, setDirty] = useState(false);
@@ -257,19 +271,21 @@ function XoaySection() {
 
   useEffect(() => {
     if (!autoPoll) return;
+    const ms = open ? 3000 : 10000;
     const t = setInterval(() => {
       void fetchStatus(false);
-    }, 3000);
+    }, ms);
     return () => clearInterval(t);
-  }, [autoPoll, fetchStatus]);
+  }, [autoPoll, open, fetchStatus]);
 
   // Keep log box scrolled to the newest line when user is near the bottom.
   useEffect(() => {
+    if (!open || !showLogs) return;
     const el = logBoxRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [st?.logs?.length]);
+  }, [open, showLogs, st?.logs?.length]);
 
   const flash = (text: string) => {
     setMsg(text);
@@ -293,7 +309,7 @@ function XoaySection() {
       setSt(d);
       setDirty(false);
       syncForm(d);
-      flash(overrideRunning === undefined ? "Đã lưu cấu hình Xoay" : overrideRunning ? "Đã bật Xoay" : "Đã dừng Xoay");
+      flash(overrideRunning === undefined ? "Đã lưu cấu hình" : overrideRunning ? "Đã bật Xoay" : "Đã dừng Xoay");
     } catch (e) {
       setErr(String((e as Error).message));
     } finally {
@@ -324,214 +340,254 @@ function XoaySection() {
       : [model, ...st.models]
     : [model];
   const logs = st?.logs ?? [];
-  const pillCls = st?.rotating ? "amber" : st?.running ? "green" : "red";
-  const pillTxt = st?.rotating ? "Đang xoay…" : st?.running ? "Đang chạy" : "Đang dừng";
+  const pillCls = st?.error ? "red" : st?.rotating ? "amber" : st?.running ? "green" : "red";
+  const pillTxt = st?.error ? "Lỗi" : st?.rotating ? "Đang xoay…" : st?.running ? "Đang chạy" : "Đang dừng";
+  const cfgSummary = `${shortModel(st?.selected_model || model)} · ${st?.reasoning_effort || "auto"}`;
+
+  const toggleOpen = () => {
+    setOpen((v) => {
+      if (!v) void fetchStatus(false);
+      return !v;
+    });
+  };
 
   return (
-    <section className="card xoay-card">
-      <div className="row between wrap">
-        <div className="row gap6">
-          <h3>Xoay OpenCode Proxy</h3>
-          {st && !st.error && <span className={`pill ${pillCls}`}>{pillTxt}</span>}
-        </div>
-        <div className="row gap4">
-          <button className="ghost small" onClick={() => fetchStatus(true)} disabled={Boolean(busy)} title="Tải lại">
-            ↻
-          </button>
-          <button className="ghost small" onClick={() => runAction("check", "Đã kiểm tra IP")} disabled={Boolean(busy)}>
-            {busy === "check" ? "Đang kiểm…" : "Kiểm IP"}
-          </button>
-          <button className="primary small" onClick={() => runAction("rotate", "Đã xoay IP mới")} disabled={Boolean(busy)}>
-            {busy === "rotate" ? "Đang xoay…" : "Xoay IP"}
-          </button>
-        </div>
+    <section className={`card xoay-card ${open ? "open" : ""}`}>
+      <div
+        className="xoay-head"
+        role="button"
+        tabIndex={0}
+        onClick={toggleOpen}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && toggleOpen()}
+      >
+        <h3 className="xoay-title clip">Xoay OpenCode Proxy</h3>
+        {st && <span className={`pill ${pillCls}`}>{pillTxt}</span>}
+        {st && !st.error && <span className="xoay-ok-badge">{fmt(st.requests_ok ?? 0)} OK</span>}
+        <span className="muted">{open ? "▾" : "▸"}</span>
       </div>
 
-      {!st && <p className="muted small">Đang kết nối Xoay Proxy…</p>}
-      {err && <p className="error small">{err}</p>}
+      {open && (
+        <div className="xoay-body">
+          {!st && <p className="muted small">Đang kết nối Xoay Proxy…</p>}
+          {err && <p className="error small">{err}</p>}
 
-      {st && !st.error && (
-        <>
-          <div className="kpi-grid">
-            <div>
-              <b>{fmt(st.requests_ok ?? 0)}</b>
-              <span>Request OK</span>
-            </div>
-            <div>
-              <b style={{ color: "var(--text)" }}>{fmt(st.rotations ?? 0)}</b>
-              <span>Lượt xoay</span>
-            </div>
-            <div>
-              <b style={{ color: "var(--amber)" }}>{fmt(st.quota_hits ?? 0)}</b>
-              <span>Hết quota</span>
-            </div>
-            <div>
-              <b style={{ color: (st.requests_failed ?? 0) > 0 ? "var(--red)" : "var(--muted)" }}>{fmt(st.requests_failed ?? 0)}</b>
-              <span>Lỗi</span>
-            </div>
-          </div>
-
-          <div className="xoay-meta small muted">
-            <span>
-              IP: <b className="ok mono">{st.exit_ip || "chưa rõ"}</b>
-              {st.latency_ms ? ` · ${st.latency_ms}ms` : ""}
-            </span>
-            <span>
-              ⚡KA: <b className={st.daemon_ready ? "ok" : "warn"}>{st.daemon_ready ? `${st.keepalive_hits ?? 0}/${st.keepalive_misses ?? 0}` : "tắt"}</b>
-            </span>
-            <span>
-              Luồng: <b>{st.in_flight ?? 0}/{st.max_concurrent_per_exit ?? 4}</b>
-              {(st.queued ?? 0) > 0 ? ` · đợi ${st.queued}` : ""}
-            </span>
-            {Boolean(st.api_expires_in) && <span>Hết hạn IP: {st.api_expires_in}s</span>}
-            {Boolean(st.next_rotate_in) && <span>Xoay kế: {st.next_rotate_in}s</span>}
-          </div>
-
-          <div className="xoay-subhead row between">
-            <button className="ghost small" onClick={() => setShowCfg((v) => !v)}>
-              {showCfg ? "▾" : "▸"} Model &amp; suy nghĩ
-            </button>
-            <div className="row gap4">
-              {msg && <span className="ok small">{msg}</span>}
-              <button className={st.running ? "danger small" : "primary small"} onClick={() => saveConfig(!st.running)} disabled={Boolean(busy)}>
-                {st.running ? "Dừng" : "Bắt đầu"}
-              </button>
-            </div>
-          </div>
-
-          {showCfg && (
-            <div className="form xoay-form">
-              <label>
-                Model OpenCode
+          {st && !st.error && (
+            <>
+              <div className="row between wrap gap4">
                 <div className="row gap4">
-                  <select
-                    value={model}
-                    onChange={(e) => {
-                      setModel(e.target.value);
-                      setDirty(true);
-                    }}
-                  >
-                    {models.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="ghost small"
-                    onClick={() => runAction("refresh-models", "Đã tải danh sách model")}
-                    disabled={Boolean(busy)}
-                    title="Tải lại danh sách model miễn phí"
-                  >
+                  <button className="ghost small" onClick={() => fetchStatus(true)} disabled={Boolean(busy)} title="Tải lại">
                     ↻
                   </button>
+                  <button className="ghost small" onClick={() => runAction("check", "Đã kiểm tra IP")} disabled={Boolean(busy)}>
+                    {busy === "check" ? "Đang kiểm…" : "Kiểm IP"}
+                  </button>
+                  <button className="primary small" onClick={() => runAction("rotate", "Đã xoay IP mới")} disabled={Boolean(busy)}>
+                    {busy === "rotate" ? "Đang xoay…" : "Xoay IP"}
+                  </button>
                 </div>
-              </label>
-
-              <label className="row small">
-                <input
-                  type="checkbox"
-                  checked={forceModel}
-                  onChange={(e) => {
-                    setForceModel(e.target.checked);
-                    setDirty(true);
-                  }}
-                />
-                <span>Ép dùng model này (vẫn giữ hậu tố #none/#low/#max)</span>
-              </label>
-
-              <label>
-                Mức suy nghĩ (Reasoning Effort)
-                <select
-                  value={effort}
-                  onChange={(e) => {
-                    setEffort(e.target.value);
-                    setDirty(true);
-                  }}
-                >
-                  <option value="">Tự động (theo app gửi)</option>
-                  <option value="none">none — tắt suy nghĩ (nhanh nhất)</option>
-                  <option value="low">low — suy nghĩ nhẹ (khuyến nghị)</option>
-                  <option value="medium">medium — cân bằng</option>
-                  <option value="high">high — suy nghĩ sâu</option>
-                  <option value="max">max — sâu nhất (chậm)</option>
-                </select>
-              </label>
-
-              <label className="row small">
-                <input
-                  type="checkbox"
-                  checked={forceEffort}
-                  onChange={(e) => {
-                    setForceEffort(e.target.checked);
-                    setDirty(true);
-                  }}
-                />
-                <span>Ép dùng mức suy nghĩ này cho mọi request</span>
-              </label>
-
-              <div className="row gap6">
-                <label>
-                  Luồng / IP
-                  <input
-                    type="number"
-                    min={1}
-                    max={12}
-                    value={maxConc}
-                    onChange={(e) => {
-                      setMaxConc(Number(e.target.value) || 4);
-                      setDirty(true);
-                    }}
-                  />
-                </label>
-                <label>
-                  Chu kỳ xoay (giây)
-                  <input
-                    type="number"
-                    min={60}
-                    max={86400}
-                    value={intervalSecs}
-                    onChange={(e) => {
-                      setIntervalSecs(Number(e.target.value) || 1800);
-                      setDirty(true);
-                    }}
-                  />
-                </label>
-              </div>
-
-              <div className="row between">
-                <span className="muted tiny">{dirty ? "Có thay đổi chưa lưu" : st.url}</span>
-                <button className="primary" onClick={() => saveConfig()} disabled={Boolean(busy)}>
-                  {busy === "save" ? "Đang lưu…" : "Lưu cấu hình"}
+                <button className={st.running ? "danger small" : "primary small"} onClick={() => saveConfig(!st.running)} disabled={Boolean(busy)}>
+                  {st.running ? "Dừng" : "Bắt đầu"}
                 </button>
               </div>
-            </div>
-          )}
 
-          <div className="xoay-subhead row between">
-            <button className="ghost small" onClick={() => setShowLogs((v) => !v)}>
-              {showLogs ? "▾" : "▸"} Nhật ký hoạt động ({logs.length})
-            </button>
-            <label className="row small muted" style={{ cursor: "pointer" }}>
-              <input type="checkbox" checked={autoPoll} onChange={(e) => setAutoPoll(e.target.checked)} />
-              <span>Tự cập nhật 3s</span>
-            </label>
-          </div>
+              {msg && <div className="ok small">{msg}</div>}
 
-          {showLogs && (
-            <div className="xoay-logs" ref={logBoxRef}>
-              {logs.length === 0 && <div className="muted">Chưa có nhật ký.</div>}
-              {logs.map((l, i) => (
-                <div key={`${l.at}-${i}`} className="xoay-log-line">
-                  <span className="muted">{l.at}</span>{" "}
-                  <span className={`xoay-lvl ${l.level}`}>[{l.level.toUpperCase()}]</span>{" "}
-                  <span>{l.msg}</span>
+              <div className="xoay-kpis">
+                <div>
+                  <b>{fmt(st.requests_ok ?? 0)}</b>
+                  <span>OK</span>
                 </div>
-              ))}
-            </div>
+                <div>
+                  <b style={{ color: "var(--text)" }}>{fmt(st.rotations ?? 0)}</b>
+                  <span>Xoay</span>
+                </div>
+                <div>
+                  <b style={{ color: "var(--amber)" }}>{fmt(st.quota_hits ?? 0)}</b>
+                  <span>Quota</span>
+                </div>
+                <div>
+                  <b style={{ color: (st.requests_failed ?? 0) > 0 ? "var(--red)" : "var(--muted)" }}>{fmt(st.requests_failed ?? 0)}</b>
+                  <span>Lỗi</span>
+                </div>
+              </div>
+
+              <div className="xoay-meta small muted">
+                <span>
+                  IP: <b className="ok">{st.exit_ip || "—"}</b>
+                  {st.latency_ms ? ` (${st.latency_ms}ms)` : ""}
+                </span>
+                <span>
+                  ⚡KA: <b className={st.daemon_ready ? "ok" : "warn"}>{st.daemon_ready ? `${st.keepalive_hits ?? 0}/${st.keepalive_misses ?? 0}` : "tắt"}</b>
+                </span>
+                <span>
+                  Luồng: <b>{st.in_flight ?? 0}/{st.max_concurrent_per_exit ?? 4}</b>
+                  {(st.queued ?? 0) > 0 ? ` (+${st.queued})` : ""}
+                </span>
+                {Boolean(st.api_expires_in) && <span>Hạn IP: {fmtSecs(st.api_expires_in)}</span>}
+                {Boolean(st.next_rotate_in) && <span>Xoay kế: {fmtSecs(st.next_rotate_in)}</span>}
+              </div>
+
+              <div className={`xoay-acc ${showCfg ? "open" : ""}`}>
+                <div
+                  className="xoay-acc-head"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setShowCfg((v) => !v)}
+                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setShowCfg((v) => !v)}
+                >
+                  <span>Cấu hình</span>
+                  <span className="muted tiny clip xoay-acc-summary">{cfgSummary}</span>
+                  <span className="muted">{showCfg ? "▾" : "▸"}</span>
+                </div>
+
+                {showCfg && (
+                  <div className="form xoay-form">
+                    <label>
+                      Model OpenCode
+                      <div className="row gap4">
+                        <select
+                          value={model}
+                          onChange={(e) => {
+                            setModel(e.target.value);
+                            setDirty(true);
+                          }}
+                        >
+                          {models.map((m) => (
+                            <option key={m} value={m}>
+                              {shortModel(m)}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => runAction("refresh-models", "Đã tải danh sách model")}
+                          disabled={Boolean(busy)}
+                          title="Tải lại danh sách model miễn phí"
+                        >
+                          ↻
+                        </button>
+                      </div>
+                    </label>
+
+                    <label>
+                      Mức suy nghĩ
+                      <select
+                        value={effort}
+                        onChange={(e) => {
+                          setEffort(e.target.value);
+                          setDirty(true);
+                        }}
+                      >
+                        <option value="">Tự động (theo app gửi)</option>
+                        <option value="none">none — tắt suy nghĩ</option>
+                        <option value="low">low — nhẹ (khuyến nghị)</option>
+                        <option value="medium">medium — cân bằng</option>
+                        <option value="high">high — sâu</option>
+                        <option value="max">max — sâu nhất</option>
+                      </select>
+                    </label>
+
+                    <div className="row between wrap gap6">
+                      <label className="row small" title="Ép dùng model này cho mọi request (vẫn giữ hậu tố #none/#low/#max)">
+                        <input
+                          type="checkbox"
+                          checked={forceModel}
+                          onChange={(e) => {
+                            setForceModel(e.target.checked);
+                            setDirty(true);
+                          }}
+                        />
+                        <span>Ép model</span>
+                      </label>
+                      <label className="row small" title="Ép dùng mức suy nghĩ này cho mọi request">
+                        <input
+                          type="checkbox"
+                          checked={forceEffort}
+                          onChange={(e) => {
+                            setForceEffort(e.target.checked);
+                            setDirty(true);
+                          }}
+                        />
+                        <span>Ép mức suy nghĩ</span>
+                      </label>
+                    </div>
+
+                    <div className="row gap6">
+                      <label>
+                        Luồng / IP
+                        <input
+                          type="number"
+                          min={1}
+                          max={12}
+                          value={maxConc}
+                          onChange={(e) => {
+                            setMaxConc(Number(e.target.value) || 4);
+                            setDirty(true);
+                          }}
+                        />
+                      </label>
+                      <label>
+                        Chu kỳ xoay (giây)
+                        <input
+                          type="number"
+                          min={60}
+                          max={86400}
+                          value={intervalSecs}
+                          onChange={(e) => {
+                            setIntervalSecs(Number(e.target.value) || 1800);
+                            setDirty(true);
+                          }}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="row between">
+                      <span className="muted tiny">{dirty ? "Chưa lưu thay đổi" : ""}</span>
+                      <button className="primary small" onClick={() => saveConfig()} disabled={Boolean(busy)}>
+                        {busy === "save" ? "Đang lưu…" : "Lưu cấu hình"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className={`xoay-acc ${showLogs ? "open" : ""}`}>
+                <div
+                  className="xoay-acc-head"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setShowLogs((v) => !v)}
+                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setShowLogs((v) => !v)}
+                >
+                  <span>Nhật ký ({logs.length})</span>
+                  <label
+                    className="row tiny muted xoay-poll-toggle"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Tự cập nhật mỗi 3 giây"
+                  >
+                    <input type="checkbox" checked={autoPoll} onChange={(e) => setAutoPoll(e.target.checked)} />
+                    <span>3s</span>
+                  </label>
+                  <span className="muted">{showLogs ? "▾" : "▸"}</span>
+                </div>
+
+                {showLogs && (
+                  <div className="xoay-logs" ref={logBoxRef}>
+                    {logs.length === 0 && <div className="muted">Chưa có nhật ký.</div>}
+                    {logs.map((l, i) => (
+                      <div key={`${l.at}-${i}`} className="xoay-log-line">
+                        <span className="muted">{l.at}</span>{" "}
+                        <span className={`xoay-lvl ${l.level}`}>[{l.level.toUpperCase()}]</span>{" "}
+                        <span>{l.msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
           )}
-        </>
+        </div>
       )}
     </section>
   );

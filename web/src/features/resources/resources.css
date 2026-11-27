@@ -92,33 +92,111 @@
 
 /* Xoay OpenCode Proxy widget inside Resources tab */
 .xoay-card {
+  gap: 0;
+}
+.xoay-card.open {
+  outline: 2px solid var(--accent-hi);
+}
+.xoay-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.xoay-head:focus-visible {
+  outline: 2px solid var(--amber);
+}
+.xoay-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.xoay-ok-badge {
+  color: var(--lime);
+  font-weight: bold;
+  white-space: nowrap;
+}
+.xoay-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #46507a;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+.xoay-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.xoay-kpis > div {
+  background: #1a1d30;
+  border: 2px solid var(--line);
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+}
+.xoay-kpis b {
+  font-size: 20px;
+  color: var(--lime);
+}
+.xoay-kpis span {
+  font-size: 13px;
+  color: var(--muted);
 }
 .xoay-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 12px;
+  gap: 4px 10px;
   padding: 5px 8px;
   background: #1a1d30;
   border: 2px solid var(--line);
 }
-.xoay-subhead {
-  border-top: 1px dashed #46507a;
-  padding-top: 6px;
+.xoay-acc {
+  background: var(--card-hi);
+  box-shadow: var(--bevel);
+  padding: 6px 8px;
+}
+.xoay-acc.open {
+  outline: 1px solid var(--accent-hi);
+}
+.xoay-acc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.xoay-acc-head:focus-visible {
+  outline: 2px solid var(--amber);
+}
+.xoay-acc-summary {
+  flex: 1 1 auto;
+  text-align: right;
+  min-width: 0;
+}
+.xoay-poll-toggle {
+  margin-left: auto;
+  cursor: pointer;
+  user-select: none;
 }
 .xoay-form {
-  background: #1e233a;
-  border: 2px solid var(--line);
-  padding: 8px 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #46507a;
 }
 .xoay-logs {
+  margin-top: 8px;
   background: #0f101c;
   border: 2px solid var(--line);
   box-shadow: var(--bevel-in);
   padding: 6px 8px;
   max-height: 220px;
   overflow-y: auto;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.25;
 }
 .xoay-log-line {
