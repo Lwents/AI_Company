@@ -222,7 +222,6 @@ function XoaySection() {
   const [forceModel, setForceModel] = useState(true);
   const [effort, setEffort] = useState("low");
   const [forceEffort, setForceEffort] = useState(false);
-  const [promptMode, setPromptMode] = useState("clean");
   const [maxConc, setMaxConc] = useState(4);
   const [intervalSecs, setIntervalSecs] = useState(1800);
   const logBoxRef = useRef<HTMLDivElement>(null);
@@ -232,7 +231,6 @@ function XoaySection() {
     if (d.force_selected_model !== undefined) setForceModel(Boolean(d.force_selected_model));
     if (d.reasoning_effort !== undefined) setEffort(d.reasoning_effort || "");
     if (d.force_reasoning_effort !== undefined) setForceEffort(Boolean(d.force_reasoning_effort));
-    if (d.prompt_mode !== undefined) setPromptMode(d.prompt_mode || "clean");
     if (d.max_concurrent_per_exit !== undefined) setMaxConc(d.max_concurrent_per_exit || 4);
     if (d.interval_secs !== undefined) setIntervalSecs(d.interval_secs || 1800);
   }, []);
@@ -287,7 +285,6 @@ function XoaySection() {
         force_selected_model: forceModel,
         reasoning_effort: effort,
         force_reasoning_effort: forceEffort,
-        prompt_mode: promptMode,
         max_concurrent_per_exit: Math.max(1, Math.min(12, Number(maxConc) || 4)),
         interval_secs: Math.max(60, Math.min(86400, Number(intervalSecs) || 1800)),
       };
@@ -392,7 +389,7 @@ function XoaySection() {
 
           <div className="xoay-subhead row between">
             <button className="ghost small" onClick={() => setShowCfg((v) => !v)}>
-              {showCfg ? "▾" : "▸"} Model, suy nghĩ &amp; chế độ
+              {showCfg ? "▾" : "▸"} Model &amp; suy nghĩ
             </button>
             <div className="row gap4">
               {msg && <span className="ok small">{msg}</span>}
@@ -472,21 +469,6 @@ function XoaySection() {
                   }}
                 />
                 <span>Ép dùng mức suy nghĩ này cho mọi request</span>
-              </label>
-
-              <label>
-                Lời nhắc hệ thống (System Prompt)
-                <select
-                  value={promptMode}
-                  onChange={(e) => {
-                    setPromptMode(e.target.value);
-                    setDirty(true);
-                  }}
-                >
-                  <option value="clean">clean — Sạch (không chèn lời nhắc OpenCode)</option>
-                  <option value="full">full — Đầy đủ chuẩn OpenCode CLI</option>
-                  <option value="raw">raw — Nguyên bản 100%</option>
-                </select>
               </label>
 
               <div className="row gap6">
