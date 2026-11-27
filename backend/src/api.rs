@@ -218,6 +218,7 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         autopilot: false,
         design_options: 0,
         team: vec![],
+        gate_rounds: 0,
         meetings: 0,
         tech: body.tech.trim().chars().take(300).collect(),
         versions: vec![],
@@ -323,6 +324,11 @@ async fn project_action(State(store): State<S>, Path((id, action)): Path<(String
             // Stop operating the product (archive).
             workflow::halt(&store, &id, ProjectStatus::Done);
             store.update_project(&id, |p| p.phase = Phase::Done);
+        }
+        "check" => {
+            // The same browser check the hand-over gate runs: what a user would hit on the preview.
+            let issues = crate::qa::smoke(&store, &p).await;
+            return Ok(Json(json!({ "issues": issues })));
         }
         "simulate" => {
             if p.status != ProjectStatus::Operating {
@@ -512,7 +518,12 @@ async fn serve_preview(store: S, id: String, path: String) -> Response {
             break;
         }
     }
-    let path = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path };
+    let mut path = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path };
+    // Single-page apps: an address like /play/local is a route of the app, not a file.
+    let last = path.rsplit('/').next().unwrap_or("");
+    if !last.contains('.') && !dir.join(&path).is_file() && dir.join("index.html").is_file() {
+        path = "index.html".into();
+    }
     let Ok(file) = safe_path(&dir, &path) else { return StatusCode::BAD_REQUEST.into_response() };
     match tokio::fs::read(&file).await {
         Ok(mut bytes) => {

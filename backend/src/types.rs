@@ -225,6 +225,9 @@ pub struct Project {
     /// Employees working on this project (picked when it starts, so parallel projects don't share people).
     #[serde(default)]
     pub team: Vec<String>,
+    /// Rounds the hand-over gate sent the work back (blocked tickets / machine-found problems).
+    #[serde(default)]
+    pub gate_rounds: u32,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,

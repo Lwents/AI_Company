@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Markdown } from "@/shared/Markdown";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { confirmDialog } from "@/shared/ui/Dialog";
@@ -18,6 +19,17 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
   const { state } = useStore();
   const [feedback, setFeedback] = useState("");
   const [err, setErr] = useState("");
+  const [check, setCheck] = useState<{ busy: boolean; issues: string[] | null }>({ busy: false, issues: null });
+  const runCheck = async () => {
+    setCheck({ busy: true, issues: null });
+    try {
+      const r = await api<{ issues: string[] }>("POST", `/api/projects/${p.id}/check`);
+      setCheck({ busy: false, issues: r.issues });
+    } catch (e) {
+      setCheck({ busy: false, issues: null });
+      setErr(String((e as Error).message));
+    }
+  };
   const st = PROJECT_STATUS[p.status];
   const phaseIdx = PHASES.findIndex((x) => x.id === p.phase);
   const tickets = state!.tickets.filter((t) => t.projectId === p.id);
@@ -90,10 +102,29 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
                 "Công nghệ: PM tư vấn với bạn"
               )}
             </span>
+            <button onClick={runCheck} disabled={check.busy} title="Mở bản xem thử bằng trình duyệt thật (máy tính + điện thoại) và tìm lỗi người dùng sẽ gặp">
+              {check.busy ? "Đang kiểm tra…" : "🔍 Kiểm tra tự động"}
+            </button>
             <a className="btn" href={`/api/projects/${p.id}/download`} download>
               ⬇ Tải mã nguồn (.zip)
             </a>
           </div>
+          {check.issues && (
+            <div className={`check-result small ${check.issues.length ? "bad" : "good"}`}>
+              {check.issues.length === 0 ? (
+                "✅ Kiểm tra tự động: không thấy tệp 404, lỗi JavaScript, nút không nhìn thấy hay tràn ngang."
+              ) : (
+                <>
+                  <b>⚠ Kiểm tra tự động thấy {check.issues.length} lỗi:</b>
+                  <ul>
+                    {check.issues.map((x) => (
+                      <li key={x}>{x}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
           {p.versions?.length > 0 && (
             <details className="versions">
               <summary>Lịch sử phiên bản ({p.versions.length})</summary>
@@ -114,7 +145,7 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
           {p.phase === "awaiting_approval" && (
             <div className="report">
               <b>Báo cáo của CEO</b>
-              <p>{p.report || "(trống)"}</p>
+              {p.report ? <Markdown className="read" text={p.report} /> : <p>(trống)</p>}
               <div className="row">
                 <a className="btn" href={previewUrl(p.id)} target="_blank" rel="noreferrer">
                   Mở sản phẩm

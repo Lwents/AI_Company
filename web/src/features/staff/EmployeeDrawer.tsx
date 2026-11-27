@@ -1,4 +1,5 @@
 import { useStore } from "@/store";
+import { plain } from "@/shared/Markdown";
 import { Avatar } from "@/shared/Avatar";
 import { ROLE_LABEL, STATUS_LABEL } from "@/shared/labels";
 import { time, usd } from "@/shared/format";
@@ -48,7 +49,7 @@ export function EmployeeDrawer() {
         {acts.length === 0 && <p className="muted small">Chưa có hoạt động.</p>}
         {acts.map((a) => (
           <div key={a.id} className={`act ${a.kind}`}>
-            <span className="muted">{time(a.ts)}</span> <span>{a.text}</span>
+            <span className="muted">{time(a.ts)}</span> <span>{a.kind === "result" ? a.text : plain(a.text)}</span>
           </div>
         ))}
       </div>

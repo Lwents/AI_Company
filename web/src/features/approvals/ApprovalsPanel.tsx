@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { time } from "@/shared/format";
-import { Markdown } from "@/shared/Markdown";
+import { Markdown, plain } from "@/shared/Markdown";
 import { previewUrl } from "@/shared/runtime";
 import type { Approval } from "@/api/types";
 
@@ -26,7 +26,7 @@ export function ApprovalsPanel() {
           {history.map((a) => (
             <div key={a.id} className="hist small">
               <span className="muted">{time(a.ts)}</span> <b>{KIND[a.kind]}</b> · {STATUS[a.status]}
-              <div className="mono clip">{a.detail}</div>
+              <div className="mono clip">{plain(a.detail)}</div>
               {a.answer && <div className="muted">↳ {a.answer}</div>}
             </div>
           ))}

@@ -9,6 +9,7 @@ mod history;
 mod import;
 mod llm;
 mod mcp;
+mod qa;
 mod skills;
 mod ops;
 mod portal;

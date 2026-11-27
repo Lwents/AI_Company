@@ -1,4 +1,5 @@
 import { useStore } from "@/store";
+import { plain } from "@/shared/Markdown";
 
 /** Last few tool calls / errors, scrolling under the office. */
 export function ActivityTicker() {
@@ -12,7 +13,7 @@ export function ActivityTicker() {
         const e = state.employees.find((x) => x.id === a.employeeId);
         return (
           <span key={a.id} className={`small ${a.kind === "error" ? "err" : ""}`}>
-            <span className="dot" style={{ background: e?.color }} /> <b>{e?.name}</b> {a.text.slice(0, 70)}
+            <span className="dot" style={{ background: e?.color }} /> <b>{e?.name}</b> {plain(a.text).slice(0, 70)}
           </span>
         );
       })}

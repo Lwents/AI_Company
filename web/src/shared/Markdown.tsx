@@ -5,6 +5,23 @@ import type { ReactNode } from "react";
  * indent), **bold**, *italic*, `code`, ``` blocks and paragraphs. Builds React elements only
  * (never innerHTML), so model text cannot inject markup.
  */
+/** Markdown → plain one-line text (for previews, tickers, speech bubbles): no **, ##, `, list markers. */
+export function plain(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, "$1$2")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "")
+    .replace(/\|/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function Markdown({ text, className }: { text: string; className?: string }) {
   return <div className={"md " + (className ?? "")}>{blocks(text)}</div>;
 }

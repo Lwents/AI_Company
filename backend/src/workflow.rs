@@ -924,6 +924,7 @@ pub fn draft_project(store: &S, name: &str, request: &str) -> Project {
         autopilot: false,
         design_options: 0,
         team: vec![],
+        gate_rounds: 0,
         meetings: 0,
         tech: String::new(),
         versions: vec![],
@@ -1577,8 +1578,97 @@ async fn phase_release(store: &S, p: &Project, cancel: &CancellationToken) -> Re
     if p.qa_rounds < MAX_QA_ROUNDS && final_qa(store, p, cancel).await? {
         return Ok(true); // regressions → back to Build
     }
+    if ship_gate(store, p, cancel).await? {
+        return Ok(true); // blocked tickets / problems a user would see → back to Build
+    }
     write_specification(store, p, cancel).await?;
     Ok(false)
+}
+
+const MAX_GATE_ROUNDS: u32 = 2;
+
+/// Nothing is handed over "done" while a ticket is blocked or a browser finds problems a user would
+/// hit. The work goes back to Build (twice at most); after that the chairman decides.
+async fn ship_gate(store: &S, p: &Project, cancel: &CancellationToken) -> Result<bool, String> {
+    let blocked: Vec<(String, String)> = store.with(|s| {
+        s.tickets.iter().filter(|t| t.project_id == p.id && t.status == TicketStatus::Blocked).map(|t| (t.id.clone(), format!("{}: {}", t.key, t.title))).collect()
+    });
+    store.post_message(Some(&p.id), "system", "all", "Kiểm tra tự động trước khi bàn giao: mở bản xem thử trên máy tính và điện thoại…", "system");
+    let found = crate::qa::smoke(store, p).await;
+    if blocked.is_empty() && found.is_empty() {
+        store.post_message(Some(&p.id), "system", "all", "Kiểm tra tự động: không thấy lỗi (tệp 404, lỗi JavaScript, nút không nhìn thấy, tràn ngang).", "system");
+        return Ok(false);
+    }
+    let mut lines: Vec<String> = blocked.iter().map(|(_, t)| format!("- Ticket bị chặn {t}")).collect();
+    lines.extend(found.iter().map(|f| format!("- {f}")));
+    let list = lines.join("\n");
+    let round = store.project(&p.id).map(|x| x.gate_rounds).unwrap_or(0);
+    if round < MAX_GATE_ROUNDS {
+        store.update_project(&p.id, |p| p.gate_rounds += 1);
+        // Blocked tickets get another go (the Tech Lead can split them); found problems become one bug ticket.
+        for (id, _) in &blocked {
+            store.update_ticket(id, |t| {
+                t.status = TicketStatus::Todo;
+                t.bounces = 0;
+                t.notes.push("Mở lại trước khi bàn giao: sản phẩm chưa được bàn giao khi ticket này còn bị chặn. Làm theo cách khác / chia nhỏ nếu cần.".into());
+            });
+        }
+        if !found.is_empty() {
+            let seq = store.update_project(&p.id, |p| {
+                p.ticket_seq += 1;
+                p.ticket_seq
+            });
+            store.insert_ticket(Ticket {
+                id: crate::store::new_id(),
+                project_id: p.id.clone(),
+                key: format!("T-{}", seq.unwrap_or(0)),
+                title: "[Kiểm tra tự động] Lỗi người dùng gặp trên bản xem thử".into(),
+                description: format!(
+                    "Trình duyệt thật mở bản xem thử {} (1280px và 375px) và gặp:\n{}\n\nLưu ý: sản phẩm chạy dưới đường dẫn con /preview/<mã dự án>/ — mọi tài nguyên (âm thanh, ảnh, icon, worker) phải dùng đường dẫn tương đối hoặc import.meta.env.BASE_URL, không bắt đầu bằng \"/\".",
+                    crate::config::preview_url(&p.id),
+                    found.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n")
+                ),
+                acceptance: vec![
+                    "Mở bản xem thử ở 1280px và 375px: không còn tệp 404 và không còn lỗi JavaScript trong console".into(),
+                    "Mọi nút có chữ đều nhìn thấy rõ (tương phản chữ / nền đạt WCAG AA)".into(),
+                    "Không trang nào bị tràn ngang ở 375px".into(),
+                ],
+                kind: "bug".into(),
+                status: TicketStatus::Todo,
+                assignee: None,
+                created_by: "system".into(),
+                bounces: 0,
+                notes: vec![],
+                priority: 1,
+                created_at: crate::store::now_ms(),
+                updated_at: crate::store::now_ms(),
+            });
+        }
+        store.post_message(Some(&p.id), "system", "all", format!("Chưa bàn giao được, đội sửa tiếp (vòng {}/{MAX_GATE_ROUNDS}):\n{list}", round + 1), "system");
+        return Ok(true);
+    }
+    // Still not clean after the rounds allowed: the chairman decides instead of a silent "done".
+    let a = store
+        .request_approval(
+            Some(&p.id),
+            "system",
+            ApprovalKind::Question,
+            format!("Sản phẩm \"{}\" còn lỗi trước khi bàn giao", p.name),
+            format!("Đội đã sửa {MAX_GATE_ROUNDS} vòng nhưng vẫn còn:\n{list}\n\nGhi \"bàn giao\" để bàn giao như hiện tại (lỗi được ghi trong báo cáo), hoặc ghi \"sửa tiếp\" / góp ý để đội làm thêm."),
+            cancel,
+        )
+        .await?;
+    let ans = a.answer.unwrap_or_default().trim().to_lowercase();
+    let ship = a.status != ApprovalStatus::Answered || ["bàn giao", "ban giao", "ok", "duyệt", "được"].iter().any(|w| ans.starts_with(w));
+    if ship {
+        store.post_message(Some(&p.id), "system", "all", format!("Bàn giao với các lỗi còn lại (ghi vào báo cáo):\n{list}"), "system");
+        return Ok(false);
+    }
+    store.update_project(&p.id, |p| p.gate_rounds = 0);
+    if !ans.starts_with("sửa tiếp") && !ans.is_empty() {
+        store.post_message(Some(&p.id), "chairman", "all", format!("Góp ý trước khi bàn giao: {ans}"), "chat");
+    }
+    Ok(true)
 }
 
 /// The PM writes the product specification and user guide, with real screenshots and flow diagrams.
@@ -1653,7 +1743,8 @@ async fn final_qa(store: &S, p: &Project, cancel: &CancellationToken) -> Result<
 1. Chạy toàn bộ lint / typecheck / test / build của dự án.
 2. Chạy lại TOÀN BỘ test case trong docs/qa/TEST-CASES.md (regression) và mọi tiêu chí nghiệm thu trong docs/REQUIREMENTS.md trên trình duyệt thật ở bản xem thử {} — cả 1280px và 375px — như một người dùng mới: luồng chính, ca biên, dữ liệu rỗng / nhiều, tải lại trang, lỗi console.
 3. Soát chất lượng tổng thể: giao diện có chỗ nào xấu / lệch / khó hiểu, chữ tiếng Việt, thông báo lỗi, tốc độ.
-Mỗi lỗi THẬT gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình, mức độ) và ghi vào docs/qa/BUGS.md. Cập nhật trạng thái mới nhất trong TEST-CASES.md và RTM.md; xuất thêm docs/qa/test-cases.csv và docs/qa/bugs.csv (mở được bằng Excel / Google Sheets). Viết docs/QA-REPORT.md dạng Test Summary Report: tổng số case, Pass / Fail / Blocked / Not Run và % đạt, số bug theo Severity và trạng thái, độ phủ RTM (FR có case đạt / tổng FR), exit criteria trong TEST-PLAN đạt chưa, rủi ro còn lại, kết luận đủ điều kiện phát hành hay không. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
+Bấm thử TỪNG nút / liên kết chính trên trang thật (nút phải nhìn thấy rõ và bấm được), mở thẳng từng đường dẫn con, xem console và tệp tải lỗi (404). Nếu dự án có test giao diện (Playwright / e2e) thì chạy chúng trên bản xem thử thật (vd. PLAYWRIGHT_TEST_BASE_URL=<địa chỉ bản xem thử>), không chỉ trên máy chủ dev.
+Mỗi lỗi THẬT BẮT BUỘC gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình, mức độ) — hệ thống CHỈ biết có lỗi qua report_issue; ghi vào tệp hay nhắn tin thì lỗi vẫn bị coi là không có — và ghi vào docs/qa/BUGS.md. Chỉ kết luận \"đủ điều kiện bàn giao\" khi không còn lỗi và không còn ticket bị chặn. Cập nhật trạng thái mới nhất trong TEST-CASES.md và RTM.md; xuất thêm docs/qa/test-cases.csv và docs/qa/bugs.csv (mở được bằng Excel / Google Sheets). Viết docs/QA-REPORT.md dạng Test Summary Report: tổng số case, Pass / Fail / Blocked / Not Run và % đạt, số bug theo Severity và trạng thái, độ phủ RTM (FR có case đạt / tổng FR), exit criteria trong TEST-PLAN đạt chưa, rủi ro còn lại, kết luận đủ điều kiện phát hành hay không. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
         crate::config::preview_url(&p.id),
         revision_note(p)
     );

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Markdown } from "@/shared/Markdown";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { CASE_KIND, CASE_STATUS, ROLE_LABEL } from "@/shared/labels";
@@ -49,7 +50,7 @@ export function CaseRow({ c, open, onToggle }: { c: SupportCase; open: boolean; 
                   <div className="small" style={{ color: w.color }}>
                     {w.name} · {time(m.ts)}
                   </div>
-                  <div className="read">{m.text}</div>
+                  <Markdown className="read" text={m.text} />
                 </div>
               );
             })}

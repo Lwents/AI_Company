@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Markdown } from "@/shared/Markdown";
 import { useStore } from "@/store";
 import { TICKET_COLUMNS } from "@/shared/labels";
 import "./kanban.css";
@@ -46,7 +47,7 @@ export function KanbanPanel() {
                   <div className="ttitle">{t.title}</div>
                   {open === t.id && (
                     <div className="small tdetail">
-                      <p>{t.description}</p>
+                      <Markdown className="read" text={t.description} />
                       {t.acceptance.length > 0 && (
                         <>
                           <b>Tiêu chí nghiệm thu</b>

@@ -391,6 +391,7 @@ mod side_task_tests {
             autopilot: false,
             design_options: 0,
             team: vec![],
+            gate_rounds: 0,
             meetings: 0,
             tech: String::new(),
             versions: vec![],

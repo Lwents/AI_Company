@@ -138,3 +138,19 @@
     min-height: 36px;
   }
 }
+
+.check-result {
+  padding: 6px 8px;
+  border: 2px solid var(--line);
+  background: var(--card-hi);
+}
+.check-result.bad {
+  border-color: var(--orange);
+}
+.check-result.good {
+  border-color: var(--green);
+}
+.check-result ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}

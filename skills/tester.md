@@ -56,3 +56,9 @@ Mỗi lượt test ticket (giữ gọn, chỉ phần của ticket):
 1. Thêm / cập nhật các dòng case cho các FR của ticket trong TEST-CASES.md (nhóm theo module), chạy, điền Kết quả thực tế + Trạng thái + Bằng chứng.
 2. Cập nhật các dòng FR đó trong RTM.md.
 3. Lỗi thật → thêm BUG-xxx vào BUGS.md và ghi mã đó trong `fail_ticket`. Ticket được sửa quay lại → **retest** đúng case đã fail, đổi trạng thái bug (Retest → Closed hoặc Reopened), rồi chạy nhanh các case liên quan (regression) để chắc không hỏng chỗ khác.
+
+Bài học bắt buộc (từng để lọt lỗi):
+- Test giao diện (Playwright / e2e) phải chạy trên **bản xem thử thật** (đường dẫn con `/preview/<mã dự án>/`), không chỉ trên máy chủ dev ở `/`: đường dẫn tuyệt đối như `/sounds/x.wav` chạy ở dev nhưng 404 ở bản thật.
+- Bấm thử từng nút chính: nút phải **nhìn thấy rõ** (chữ khác màu nền) và bấm được — test logic xanh 100% không có nghĩa người dùng chơi / dùng được.
+- Thấy lỗi thì **gọi `report_issue` / `fail_ticket`**; ghi vào tệp hay nhắn tin thì hệ thống không biết là có lỗi.
+- Không viết "đủ điều kiện bàn giao" khi còn ticket bị chặn hay còn lỗi; trước khi bàn giao hệ thống còn tự mở bản xem thử để kiểm tra lại.

@@ -1,4 +1,5 @@
 import type { CompanyState } from "@/api/types";
+import { plain } from "@/shared/Markdown";
 import type { LiveEvent } from "@/store";
 import { meetingSeats, route, visitPoint, type Layout, type P } from "../layout";
 import { SPEED, type Scene } from "./scene";
@@ -31,7 +32,7 @@ export function applyLiveEvent(scene: Scene, e: LiveEvent) {
     a.task = undefined;
     a.path = [];
   }
-  if (a.queue.length < 4) a.queue.push({ kind: "deliver", to: e.to, text: e.text, stage: "go" });
+  if (a.queue.length < 4) a.queue.push({ kind: "deliver", to: e.to, text: plain(e.text), stage: "go" });
 }
 
 /** Keeps actors in sync with the staff list: new hires walk in, people who left walk out. */
