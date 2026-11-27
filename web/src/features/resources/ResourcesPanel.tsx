@@ -167,8 +167,6 @@ export function ResourcesPanel() {
 
   return (
     <div className="panel-body resources">
-      <XoaySection />
-
       <section className="card">
         <div className="row between">
           <h3>Tài nguyên AI (9router)</h3>
@@ -203,6 +201,8 @@ export function ResourcesPanel() {
           ))}
         </section>
       ))}
+
+      <XoaySection />
     </div>
   );
 }
