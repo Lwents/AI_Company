@@ -366,3 +366,70 @@ td {
   border-top: 1px dashed var(--line);
   margin: 8px 0;
 }
+
+/* Option cards the chairman picks from (design directions with screenshots). */
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+.choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--card-hi);
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel);
+  cursor: pointer;
+  min-width: 0;
+}
+.choice:hover {
+  outline: 2px solid var(--accent-hi);
+}
+.choice:focus-visible {
+  outline: 2px solid var(--accent-hi);
+  outline-offset: 2px;
+}
+.choice.on {
+  outline: 3px solid var(--amber);
+  background: var(--card);
+}
+.choice-shots {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  background: var(--line);
+  padding: 4px;
+  height: 220px;
+  overflow: hidden;
+}
+.choice-shots .shot {
+  flex: 3;
+  height: 100%;
+  overflow: hidden;
+  display: block;
+}
+.choice-shots .shot.mobile {
+  flex: 1;
+}
+.choice-shots img {
+  width: 100%;
+  display: block;
+  image-rendering: auto;
+}
+.choice-noimg {
+  margin: auto;
+  text-align: center;
+  padding: 8px;
+}
+.choice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.small-pill {
+  font-size: 14px;
+  margin-left: 6px;
+  vertical-align: middle;
+}

@@ -4,6 +4,7 @@ use crate::llm::{self, LlmMessage, LlmRequest, Meta, Stop, ToolResult};
 use crate::store::{now_ms, S};
 use crate::tools::{self, Ctx, Outcome};
 use crate::types::*;
+use serde_json::Value;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
@@ -76,6 +77,49 @@ fn take_inbox(store: &S, emp_id: &str, project_id: &str) -> Option<String> {
 const KEEP_FULL_TOOL_TURNS: usize = 3;
 const PRUNED_TOOL_CHARS: usize = 2000;
 
+fn image_mime(path: &str) -> Option<&'static str> {
+    match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+/// An image file as (mime, base64) for the model; skipped when missing or too big (> 4 MB).
+fn image_attachment(path: &std::path::Path) -> Option<(String, String)> {
+    let mime = image_mime(&path.to_string_lossy())?;
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 4 * 1024 * 1024 {
+        return None;
+    }
+    Some((mime.to_string(), base64(&std::fs::read(path).ok()?)))
+}
+
+/// Where a screenshot with a filename was saved: the `path: '…'` Playwright prints, else the `filename` argument.
+fn saved_screenshot(dir: &std::path::Path, text: &str, input: &Value) -> Option<(String, String)> {
+    let printed = text.split("path: '").nth(1).and_then(|s| s.split('\'').next()).map(|s| s.replace("\\\\", "/").replace('\\', "/"));
+    let rel = printed.or_else(|| input.get("filename").and_then(Value::as_str).map(str::to_string))?;
+    image_attachment(&tools::safe_path(dir, &rel).ok()?)
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for ch in data.chunks(3) {
+        let n = (ch[0] as u32) << 16 | (*ch.get(1).unwrap_or(&0) as u32) << 8 | *ch.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= ch.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 fn prune_tool_results(messages: &mut [LlmMessage], keep: usize) {
     let mut seen = 0;
     for m in messages.iter_mut().rev() {
@@ -137,7 +181,7 @@ fn short(s: &str, n: usize) -> String {
     }
 }
 
-fn describe_call(name: &str, input: &serde_json::Value) -> String {
+fn describe_call(name: &str, input: &Value) -> String {
     let g = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     if let Some((server, tool)) = name.split_once("__") {
         let what = match tool {
@@ -634,14 +678,30 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
             store.set_runtime(&emp.id, EmpStatus::Working, label.clone(), pid, tid);
             store.log_activity(&emp.id, pid, "tool", &label);
             if let Some(m) = mcp.as_mut().filter(|m| m.has(&c.name)) {
-                let r = tokio::select! {
+                let mut r = tokio::select! {
                     r = m.call(&c.name, &c.input) => r,
                     _ = cancel.cancelled() => return Err("aborted".into()),
                 };
+                // A screenshot saved to a file comes back as text only: attach the saved image so the model can see it.
+                if c.name.ends_with("browser_take_screenshot") && r.images.is_empty() && !r.is_error {
+                    if let Some(img) = saved_screenshot(&ctx.dir, &r.text, &c.input) {
+                        r.images.push(img);
+                    }
+                }
                 let note = if r.images.is_empty() { short(&r.text, 800).to_string() } else { format!("{} [{} ảnh]", short(&r.text, 600), r.images.len()) };
                 store.log_activity(&emp.id, pid, if r.is_error { "error" } else { "result" }, note);
                 results.push(ToolResult { id: c.id.clone(), content: r.text, is_error: r.is_error, images: r.images });
                 continue;
+            }
+            // Reading an image file: show the picture instead of binary garbage.
+            if c.name == "read_file" {
+                let rel = c.input.get("path").and_then(Value::as_str).unwrap_or_default();
+                if let Some(img) = image_mime(rel).and_then(|_| tools::safe_path(&ctx.dir, rel).ok()).and_then(|p| image_attachment(&p)) {
+                    let content = format!("Ảnh {rel} (đính kèm bên dưới để bạn xem).");
+                    store.log_activity(&emp.id, pid, "result", format!("{content} [1 ảnh]"));
+                    results.push(ToolResult { id: c.id.clone(), content, is_error: false, images: vec![img] });
+                    continue;
+                }
             }
             let (content, is_error) = tools::execute(&mut ctx, &c.name, &c.input).await;
             if content == "aborted" {
@@ -696,6 +756,30 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_matches_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xff, 0xfe, 0x00, 0x10]), "//4AEA==");
+    }
+
+    #[test]
+    fn attaches_saved_screenshots() {
+        let dir = std::env::temp_dir().join(format!("aico-shot-{}", crate::store::new_id()));
+        std::fs::create_dir_all(dir.join("design/shots")).unwrap();
+        std::fs::write(dir.join("design/shots/a.png"), b"PNG").unwrap();
+        // Path printed by Playwright (escaped Windows separators) wins over the argument.
+        let text = "await page.screenshot({\n  path: 'design\\\\shots\\\\a.png',\n  type: 'png' });";
+        assert_eq!(saved_screenshot(&dir, text, &serde_json::json!({})), Some(("image/png".into(), "UE5H".into())));
+        assert_eq!(saved_screenshot(&dir, "ok", &serde_json::json!({ "filename": "design/shots/a.png" })).map(|i| i.0), Some("image/png".into()));
+        assert!(saved_screenshot(&dir, "ok", &serde_json::json!({ "filename": "../x.png" })).is_none());
+        assert!(saved_screenshot(&dir, "ok", &serde_json::json!({ "filename": "notes.txt" })).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn prunes_only_old_tool_results() {

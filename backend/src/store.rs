@@ -436,7 +436,23 @@ impl Store {
         detail: impl Into<String>,
         cancel: &CancellationToken,
     ) -> Result<Approval, String> {
+        self.request_choice(project_id, employee_id, kind, title, detail, vec![], cancel).await
+    }
+
+    /// Like `request_approval`, with option cards the chairman picks from.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn request_choice(
+        &self,
+        project_id: Option<&str>,
+        employee_id: &str,
+        kind: ApprovalKind,
+        title: impl Into<String>,
+        detail: impl Into<String>,
+        options: Vec<ApprovalOption>,
+        cancel: &CancellationToken,
+    ) -> Result<Approval, String> {
         let a = Approval {
+            options,
             id: new_id(),
             ts: now_ms(),
             project_id: project_id.map(str::to_string),
@@ -447,6 +463,17 @@ impl Store {
             status: ApprovalStatus::Pending,
             answer: None,
         };
+        // The chairman left decisions to the team: questions don't wait, the asker decides (recorded for history).
+        let autopilot = self.with(|s| s.settings.autopilot || project_id.is_some_and(|id| s.projects.iter().any(|p| p.id == id && p.autopilot)));
+        if autopilot && kind == ApprovalKind::Question {
+            let mut done = a.clone();
+            done.status = ApprovalStatus::Denied;
+            done.answer = Some("(Chế độ tự quyết: đội tự quyết định)".into());
+            self.with(|s| s.approvals.push(done.clone()));
+            self.emit(ServerEvent::Upsert { coll: "approvals", item: serde_json::to_value(&done).unwrap() });
+            done.answer = None;
+            return Ok(done);
+        }
         let (tx, rx) = oneshot::channel();
         self.waiters.lock().unwrap().insert(a.id.clone(), tx);
         self.with(|s| s.approvals.push(a.clone()));

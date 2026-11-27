@@ -132,6 +132,17 @@ export interface Approval {
   detail: string;
   status: "pending" | "approved" | "denied" | "answered";
   answer?: string;
+  /** Choices shown as cards (design directions with screenshots). */
+  options?: ApprovalOption[];
+}
+
+export interface ApprovalOption {
+  id: string;
+  title: string;
+  note: string;
+  /** Paths inside the project folder, served under the project's preview. */
+  images: string[];
+  link: string;
 }
 
 export interface Activity {
@@ -218,6 +229,10 @@ export interface Settings {
   fallbackModel: string;
   lightModel: string;
   approveDesign: boolean;
+  /** The team decides alone: no questions or design choices wait for the chairman. */
+  autopilot?: boolean;
+  /** Design directions offered to the chairman. */
+  designOptions?: number;
   toolsMode: boolean;
   toolsSkillFile: string;
   autoRetries: number;

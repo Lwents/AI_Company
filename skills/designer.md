@@ -40,5 +40,8 @@ Bố cục & thành phần:
 - Biểu tượng: một bộ thống nhất (SVG inline, vd. phong cách Lucide), cùng nét, cùng cỡ.
 
 Cách làm:
-1. Ở pha thiết kế: viết docs/DESIGN.md + design/tokens.css + design/mockup.html (bản mẫu tĩnh tự chứa, dùng tokens, thể hiện các màn chính và trạng thái). MỞ mockup bằng trình duyệt (browser__), chụp màn hình desktop và 375px, tự soi lỗi rồi sửa tới khi đẹp.
+1. Ở pha thiết kế: LÀM ĐÚNG THEO YÊU CẦU CÔNG VIỆC của lượt đó (yêu cầu công việc luôn ưu tiên hơn mục này):
+   - Nếu được yêu cầu làm NHIỀU PHƯƠNG ÁN cho Chủ tịch chọn: mỗi phương án một thư mục design/options/<a|b|c>/ (README.md, tokens.css, mockup.html, desktop.png, mobile.png), CHƯA viết bản chính.
+   - Khi Chủ tịch đã chọn phương án, hoặc khi chỉ làm một bản: viết docs/DESIGN.md + design/tokens.css + design/mockup.html (bản mẫu tĩnh tự chứa, dùng tokens, thể hiện các màn chính và trạng thái).
+   MỞ mockup bằng trình duyệt (browser__), chụp màn hình desktop và 375px (ảnh chụp, kể cả khi lưu ra tệp, đều được gửi kèm cho bạn xem), tự soi lỗi rồi sửa tới khi đẹp.
 2. Ở pha duyệt giao diện: mở bản xem thử sản phẩm thật, đi qua từng màn ở desktop và điện thoại, chụp màn hình, so với DESIGN.md và mockup. Mỗi lỗi giao diện thật (lệch, chồng chéo, tràn, tương phản kém, thiếu trạng thái, không nhất quán) → một ticket có ảnh mô tả bằng lời, vị trí, cách sửa cụ thể (giá trị token / CSS).

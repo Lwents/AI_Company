@@ -210,6 +210,8 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         security_reviews: 0,
         auto_retries: 0,
         retry_at: 0,
+        autopilot: false,
+        design_options: 0,
         meetings: 0,
         tech: body.tech.trim().chars().take(300).collect(),
         versions: vec![],
@@ -339,7 +341,6 @@ async fn project_action(State(store): State<S>, Path((id, action)): Path<(String
             if running {
                 return Err(bad("Dự án đang chạy, hãy tạm dừng trước"));
             }
-            // A live product keeps its customers; operations pause while the team builds the new version.
             store.stop_ops(&id);
             store.update_project(&id, |p| {
                 p.feedback.push(fb.trim().to_string());
@@ -713,6 +714,8 @@ async fn chairman_chat(State(store): State<S>, Json(b): Json<ChatBody>) -> ApiRe
         return Err(bad("Người nhận không tồn tại"));
     }
     let m = store.post_message(b.project_id.as_deref(), "chairman", &b.to, b.text.trim(), "chat");
+    // The employee answers (and acts on simple orders) even when they're not working right now.
+    crate::chat::spawn_reply(&store, m.clone());
     Ok(Json(json!(m)))
 }
 

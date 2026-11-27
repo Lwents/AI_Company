@@ -1,6 +1,7 @@
 mod agent;
 mod api;
 mod auth;
+mod chat;
 mod config;
 mod gitflow;
 mod harness;

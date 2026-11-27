@@ -739,13 +739,207 @@ async fn phase_design(store: &S, p: &Project, cancel: &CancellationToken) -> Res
     if let Some(from) = first(store, &[Role::Pm, Role::Ba, Role::Ceo]) {
         handoff(store, &p.id, &from.id, &designer.id, "Yêu cầu đã chốt, nhờ thiết kế giao diện.");
     }
-    let task = format!(
-        "Đọc docs/PLAN.md, docs/DECISIONS.md và docs/REQUIREMENTS.md. Thiết kế giao diện ĐẸP, hiện đại, chuyên nghiệp theo kỹ năng Designer của bạn:\n- docs/DESIGN.md: phong cách, hệ màu (mã hex, có tương phản đạt WCAG AA), font hỗ trợ tiếng Việt, thang cỡ chữ, thang khoảng cách, bo góc, bóng đổ, bố cục từng trang (desktop và điện thoại), từng thành phần với đủ trạng thái (hover, focus, disabled, loading, rỗng, lỗi).\n- design/tokens.css: toàn bộ biến CSS để Dev dùng lại (nguồn duy nhất).\n- design/mockup.html: bản mẫu tĩnh tự chứa (import ./tokens.css) thể hiện các trang chính và trạng thái quan trọng.\nNếu có công cụ trình duyệt: mở {}design/mockup.html, chụp màn hình ở 1280px và 375px, tự soi và sửa tới khi đẹp, cân đối, không lỗi. Xong gọi finish.{}",
-        crate::config::preview_url(&p.id),
+    let preview = crate::config::preview_url(&p.id);
+    let dir = store.dir_of(p);
+    let run = |task: String| agent::run(store, Job { employee_id: designer.id.clone(), project_id: p.id.clone(), phase: "design", ticket_id: None, case_id: None, task }, cancel);
+    // First design of a project the chairman approves: offer several directions to pick from.
+    let n = design_option_count(store, p);
+    if n > 1 && !dir.join("design").join("mockup.html").is_file() && store.with(|s| s.settings.approve_design) {
+        run(design_options_task(&preview, n, &revision_note(p))).await?;
+        let opts = design_options(&dir);
+        if !opts.is_empty() {
+            let single = opts.len() == 1;
+            let (pick, feedback) = if single { (opts[0].clone(), None) } else { choose_design(store, p, &designer, opts, cancel).await? };
+            run(design_final_task(&preview, &pick, feedback.as_deref(), &revision_note(p))).await?;
+            // The chairman already chose; confirm again only when there were changes to make (or nothing to choose from).
+            return if single || feedback.is_some() { approve_design(store, p, &designer, cancel).await } else { Ok(()) };
+        }
+        // No options were produced: fall back to a single design.
+    }
+    run(format!(
+        "Đọc docs/PLAN.md, docs/DECISIONS.md và docs/REQUIREMENTS.md. Thiết kế giao diện ĐẸP, hiện đại, chuyên nghiệp theo kỹ năng Designer của bạn:\n{DESIGN_DELIVERABLES}\nNếu có công cụ trình duyệt: mở {preview}design/mockup.html, chụp màn hình ở 1280px và 375px, tự soi và sửa tới khi đẹp, cân đối, không lỗi. Xong gọi finish.{}",
         revision_note(p)
-    );
-    agent::run(store, Job { employee_id: designer.id.clone(), project_id: p.id.clone(), phase: "design", ticket_id: None, case_id: None, task }, cancel).await?;
+    ))
+    .await?;
     approve_design(store, p, &designer, cancel).await
+}
+
+const DESIGN_DELIVERABLES: &str = "- docs/DESIGN.md: phong cách, hệ màu (mã hex, có tương phản đạt WCAG AA), font hỗ trợ tiếng Việt, thang cỡ chữ, thang khoảng cách, bo góc, bóng đổ, bố cục từng trang (desktop và điện thoại), từng thành phần với đủ trạng thái (hover, focus, disabled, loading, rỗng, lỗi).\n- design/tokens.css: toàn bộ biến CSS để Dev dùng lại (nguồn duy nhất).\n- design/mockup.html: bản mẫu tĩnh tự chứa (import ./tokens.css) thể hiện các trang chính và trạng thái quan trọng.";
+
+/// Design directions offered to the chairman (folders design/options/<id>/).
+const DESIGN_OPTION_IDS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+/// Design directions offered for a project: its own number (set from chat), else the company setting.
+pub fn design_option_count(store: &S, p: &Project) -> usize {
+    let n = if p.design_options > 0 { p.design_options } else { store.with(|s| s.settings.design_options) };
+    (n as usize).clamp(1, DESIGN_OPTION_IDS.len())
+}
+
+pub fn set_design_options(store: &S, project_id: Option<&str>, n: u8) {
+    let n = n.clamp(1, DESIGN_OPTION_IDS.len() as u8);
+    match project_id {
+        Some(id) => {
+            store.update_project(id, |p| p.design_options = n);
+        }
+        None => update_settings(store, |s| s.design_options = n),
+    }
+}
+
+/// The team decides alone (company-wide or for this project): no question waits for the chairman.
+pub fn autopilot(store: &S, project_id: Option<&str>) -> bool {
+    store.with(|s| s.settings.autopilot) || project_id.and_then(|id| store.project(id)).is_some_and(|p| p.autopilot)
+}
+
+pub fn set_autopilot(store: &S, project_id: Option<&str>, on: bool) {
+    match project_id {
+        Some(id) => {
+            store.update_project(id, |p| p.autopilot = on);
+        }
+        None => update_settings(store, |s| s.autopilot = on),
+    }
+}
+
+fn update_settings(store: &S, f: impl FnOnce(&mut Settings)) {
+    let settings = store.with(|s| {
+        f(&mut s.settings);
+        s.settings.clone()
+    });
+    store.emit(crate::types::ServerEvent::Settings { settings });
+}
+
+/// Questions already waiting for the chairman in that scope are left to the team (as if skipped).
+pub fn release_pending(store: &S, project_id: Option<&str>) -> usize {
+    let ids: Vec<String> = store.with(|s| {
+        s.approvals
+            .iter()
+            .filter(|a| a.status == ApprovalStatus::Pending && a.kind == ApprovalKind::Question && (project_id.is_none() || a.project_id.as_deref() == project_id))
+            .map(|a| a.id.clone())
+            .collect()
+    });
+    ids.iter().filter(|id| store.resolve_approval(id, false, None).is_some()).count()
+}
+
+/// The chairman asks for changes on a finished project: a new revision round from the kickoff.
+pub fn request_changes(store: &S, id: &str, feedback: &str) -> Result<(), String> {
+    let p = store.project(id).ok_or("Dự án không tồn tại")?;
+    if store.cancels.lock().unwrap().contains_key(id) {
+        return Err("dự án đang chạy, yêu cầu được gửi tới người đang làm".into());
+    }
+    if !matches!(p.phase, Phase::AwaitingApproval | Phase::Done | Phase::Operating | Phase::Launch) && p.status != ProjectStatus::Done {
+        return Err("dự án chưa làm xong".into());
+    }
+    // A live product keeps its customers; operations pause while the team builds the new version.
+    store.stop_ops(id);
+    store.update_project(id, |p| {
+        p.feedback.push(feedback.trim().to_string());
+        p.phase = Phase::Plan;
+        p.release_rounds = 0;
+        p.design_reviews = 0;
+        p.qa_rounds = 0;
+        p.security_reviews = 0;
+    });
+    start(store, id);
+    Ok(())
+}
+
+fn design_options_task(preview: &str, n: usize, revision: &str) -> String {
+    let ids = DESIGN_OPTION_IDS[..n].join(", ");
+    format!(
+        "Đọc docs/PLAN.md, docs/DECISIONS.md và docs/REQUIREMENTS.md. Chủ tịch sẽ XEM ẢNH và CHỌN 1 trong {n} HƯỚNG THIẾT KẾ, nên hãy làm ĐÚNG {n} phương án KHÁC HẲN NHAU (phong cách, bảng màu, font, bố cục, cảm giác — không phải chỉ đổi màu), đều đẹp, hiện đại, chuyên nghiệp theo kỹ năng Designer của bạn. Phương án A là phương án bạn đề xuất nhất.\nVới mỗi phương án X trong {ids}:\n- design/options/X/README.md: dòng đầu \"# <Tên phương án ngắn gọn>\", sau đó 2–4 câu tiếng Việt: ý tưởng, cảm giác, hợp với ai, màu chính (hex), font.\n- design/options/X/tokens.css: biến CSS của phương án.\n- design/options/X/mockup.html: bản mẫu tĩnh tự chứa (import ./tokens.css) của MÀN HÌNH QUAN TRỌNG NHẤT với nội dung thật, hoàn chỉnh, đẹp ở cả máy tính và điện thoại. Chưa cần làm mọi trang.\n- ẢNH CHỤP (bắt buộc nếu có công cụ trình duyệt): mở {preview}design/options/X/mockup.html, browser_resize 1280x800 rồi browser_take_screenshot với filename \"design/options/X/desktop.png\" và fullPage true; browser_resize 375x812 rồi chụp filename \"design/options/X/mobile.png\" (fullPage true). Xem ảnh, chỗ nào chưa đẹp thì sửa rồi chụp lại.\nChưa viết docs/DESIGN.md, design/tokens.css hay design/mockup.html (làm sau khi Chủ tịch chọn). Nếu Chủ tịch nhắn đổi số phương án trong lúc bạn làm thì làm theo số mới. Xong gọi finish với tóm tắt các phương án.{revision}"
+    )
+}
+
+fn design_final_task(preview: &str, pick: &ApprovalOption, feedback: Option<&str>, revision: &str) -> String {
+    let fb = feedback.map(|f| format!("\nGóp ý thêm của Chủ tịch (phải làm theo): {f}")).unwrap_or_default();
+    format!(
+        "Chủ tịch đã CHỌN phương án {} \"{}\" (thư mục design/options/{}/).{fb}\nHoàn thiện thiết kế chính thức từ phương án này, giữ đúng phong cách đã chọn:\n{DESIGN_DELIVERABLES}\n(design/tokens.css phát triển từ design/options/{}/tokens.css.) Không xoá design/options/.\nNếu có công cụ trình duyệt: mở {preview}design/mockup.html, chụp màn hình ở 1280px và 375px, tự soi và sửa tới khi đẹp, cân đối, không lỗi. Xong gọi finish.{revision}",
+        pick.id.to_uppercase(),
+        pick.title,
+        pick.id,
+        pick.id
+    )
+}
+
+/// Options the designer produced: a folder with a mockup, a title from its README and any screenshots.
+fn design_options(dir: &Path) -> Vec<ApprovalOption> {
+    DESIGN_OPTION_IDS
+        .iter()
+        .filter_map(|id| {
+            let rel = format!("design/options/{id}");
+            let d = dir.join(&rel);
+            if !d.join("mockup.html").is_file() {
+                return None;
+            }
+            let readme = std::fs::read_to_string(d.join("README.md")).unwrap_or_default();
+            let mut lines = readme.lines().map(str::trim).filter(|l| !l.is_empty());
+            let title = lines
+                .next()
+                .filter(|l| l.starts_with('#'))
+                .map(|l| l.trim_start_matches('#').trim().to_string())
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| format!("Phương án {}", id.to_uppercase()));
+            let note: String = lines.collect::<Vec<_>>().join("\n").chars().take(600).collect();
+            let images = ["desktop.png", "mobile.png"].iter().filter(|f| d.join(f).is_file()).map(|f| format!("{rel}/{f}")).collect();
+            Some(ApprovalOption { id: id.to_string(), title, note, images, link: format!("{rel}/mockup.html") })
+        })
+        .collect()
+}
+
+/// Which option the answer picks ("Chọn phương án B …", "b", "B: …") and any extra feedback.
+fn parse_choice(answer: &str, opts: &[ApprovalOption]) -> (Option<usize>, Option<String>) {
+    // Byte offsets found in `lower` are only valid in the original when lowercasing kept the length.
+    let lower = answer.trim().to_lowercase();
+    let answer = if lower.len() == answer.trim().len() { answer.trim() } else { lower.as_str() };
+    let find = |c: char| opts.iter().position(|o| o.id.starts_with(c));
+    let letter_after = |s: &str| s.chars().next().filter(|c| c.is_ascii_alphabetic()).filter(|_| !s.chars().nth(1).is_some_and(|c| c.is_alphabetic()));
+    let picked = lower
+        .find("phương án")
+        .and_then(|i| letter_after(lower[i + "phương án".len()..].trim_start()))
+        .or_else(|| letter_after(&lower))
+        .and_then(find);
+    // Feedback: the text after "góp ý:", or whatever follows the first line when the answer was typed by hand.
+    let fb = match lower.find("góp ý:") {
+        Some(i) => answer.trim()[i + "góp ý:".len()..].trim().to_string(),
+        None if picked.is_some() => {
+            let mut parts = answer.trim().splitn(2, '\n');
+            let first = parts.next().unwrap_or("");
+            let rest = parts.next().unwrap_or("").trim().to_string();
+            // "b: thêm màu xanh" → feedback after the separator on the first line.
+            let inline = first.trim().get(1..).map(|s| s.trim_start_matches([':', '-', '.', ',', ' ']).trim()).unwrap_or("");
+            if letter_after(&first.trim().to_lowercase()).is_some() && !inline.is_empty() { format!("{inline}\n{rest}").trim().to_string() } else { rest }
+        }
+        None => answer.trim().to_string(),
+    };
+    (picked, Some(fb).filter(|s| !s.is_empty()))
+}
+
+/// The chairman picks a direction from screenshots. Skipped / unclear answers keep the designer's pick (A).
+async fn choose_design(store: &S, p: &Project, designer: &Employee, opts: Vec<ApprovalOption>, cancel: &CancellationToken) -> Result<(ApprovalOption, Option<String>), String> {
+    store.set_runtime(&designer.id, EmpStatus::Waiting, "Chờ Chủ tịch chọn phương án thiết kế", Some(&p.id), None);
+    let list: String = opts.iter().map(|o| format!("- **{}. {}**", o.id.to_uppercase(), o.title)).collect::<Vec<_>>().join("\n");
+    let a = store
+        .request_choice(
+            Some(&p.id),
+            &designer.id,
+            ApprovalKind::Question,
+            format!("Chọn phương án thiết kế \"{}\"", p.name),
+            format!("Designer làm {} phương án giao diện, mời anh/chị xem ảnh và chọn một (có thể ghi thêm góp ý):\n{list}\n\nPhương án A là đề xuất của Designer.", opts.len()),
+            opts.clone(),
+            cancel,
+        )
+        .await?;
+    store.set_runtime(&designer.id, EmpStatus::Idle, "", None, None);
+    let answer = a.answer.unwrap_or_default();
+    let (picked, feedback) = parse_choice(&answer, &opts);
+    let pick = opts[picked.unwrap_or(0)].clone();
+    // A hand-typed answer without a letter is feedback on the recommended option.
+    let msg = match (&feedback, picked, answer.trim().is_empty()) {
+        (_, None, true) => format!("Chủ tịch để Designer tự quyết, dùng phương án {} \"{}\".", pick.id.to_uppercase(), pick.title),
+        (Some(f), _, _) => format!("Chọn phương án {} \"{}\". Góp ý: {f}", pick.id.to_uppercase(), pick.title),
+        (None, _, _) => format!("Chọn phương án {} \"{}\".", pick.id.to_uppercase(), pick.title),
+    };
+    store.post_message(Some(&p.id), "chairman", &designer.id, msg, "chat");
+    Ok((pick, feedback))
 }
 
 /// The chairman (customer) looks at the mockup before anything is built; up to 2 rounds of changes.
@@ -1398,6 +1592,46 @@ async fn phase_launch(store: &S, p: &Project, cancel: &CancellationToken) -> Res
         store.emit(ServerEvent::Handoff { from: ceo.id.clone(), to: "chairman".into(), text: "Đã ra mắt sản phẩm!".into() });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod design_choice_tests {
+    use super::*;
+
+    fn opts() -> Vec<ApprovalOption> {
+        ["a", "b", "c"].iter().map(|id| ApprovalOption { id: id.to_string(), title: format!("T{id}"), note: String::new(), images: vec![], link: String::new() }).collect()
+    }
+
+    #[test]
+    fn reads_choice_and_feedback() {
+        let o = opts();
+        assert_eq!(parse_choice("Chọn phương án B — Tb", &o), (Some(1), None));
+        assert_eq!(parse_choice("Chọn phương án C — Tc\nGóp ý: chữ to hơn", &o), (Some(2), Some("chữ to hơn".into())));
+        assert_eq!(parse_choice("b", &o), (Some(1), None));
+        assert_eq!(parse_choice("B: thêm màu xanh", &o), (Some(1), Some("thêm màu xanh".into())));
+        assert_eq!(parse_choice("phương án a nhưng nền tối hơn\nbo góc ít thôi", &o).0, Some(0));
+        // Plain feedback without a letter: no pick, the whole text is feedback.
+        assert_eq!(parse_choice("màu ấm hơn", &o), (None, Some("màu ấm hơn".into())));
+        assert_eq!(parse_choice("", &o), (None, None));
+    }
+
+    #[test]
+    fn finds_options_with_titles_and_screenshots() {
+        let dir = std::env::temp_dir().join(format!("aico-opts-{}", crate::store::new_id()));
+        for id in ["a", "c"] {
+            let d = dir.join("design/options").join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("mockup.html"), "<html></html>").unwrap();
+        }
+        std::fs::write(dir.join("design/options/a/README.md"), "# Tối giản\n\nNhiều khoảng trắng.").unwrap();
+        std::fs::write(dir.join("design/options/a/desktop.png"), b"png").unwrap();
+        let o = design_options(&dir);
+        assert_eq!(o.len(), 2);
+        assert_eq!((o[0].title.as_str(), o[0].note.as_str()), ("Tối giản", "Nhiều khoảng trắng."));
+        assert_eq!(o[0].images, vec!["design/options/a/desktop.png".to_string()]);
+        assert_eq!((o[1].id.as_str(), o[1].title.as_str(), o[1].link.as_str()), ("c", "Phương án C", "design/options/c/mockup.html"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

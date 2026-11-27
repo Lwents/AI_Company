@@ -167,6 +167,20 @@ export function SettingsPanel() {
           <input type="checkbox" checked={draft.approveDesign} onChange={(e) => set("approveDesign", e.target.checked)} />
           Chủ tịch duyệt bản thiết kế giao diện trước khi code
         </label>
+        <label>
+          Số mẫu thiết kế đưa Chủ tịch chọn (1 = một bản duy nhất)
+          <input
+            type="number"
+            min={1}
+            max={8}
+            value={draft.designOptions ?? 5}
+            onChange={(e) => set("designOptions", Math.min(8, Math.max(1, Number(e.target.value) || 1)))}
+          />
+        </label>
+        <label className="row">
+          <input type="checkbox" checked={Boolean(draft.autopilot)} onChange={(e) => set("autopilot", e.target.checked)} />
+          Chế độ tự quyết: đội tự quyết mọi câu hỏi và thiết kế, không chờ Chủ tịch duyệt (cũng bật được bằng cách nhắn CEO)
+        </label>
         <label className="row">
           <input type="checkbox" checked={Boolean(draft.toolsMode)} onChange={(e) => set("toolsMode", e.target.checked)} />
           Chế độ làm tools

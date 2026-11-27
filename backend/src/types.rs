@@ -213,6 +213,12 @@ pub struct Project {
     /// When a pending automatic restart is due (ms); 0 = none. Saved so a server restart keeps it.
     #[serde(default)]
     pub retry_at: u64,
+    /// The chairman told the team to decide alone on this project (no approvals).
+    #[serde(default)]
+    pub autopilot: bool,
+    /// Design directions to offer for this project; 0 = the company setting.
+    #[serde(default)]
+    pub design_options: u8,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,
@@ -296,6 +302,25 @@ pub struct Approval {
     pub status: ApprovalStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+    /// Choices shown as cards (e.g. design directions with screenshots); the answer names the chosen id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<ApprovalOption>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalOption {
+    /// Short id the chairman picks ("a", "b", "c").
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub note: String,
+    /// Images inside the project folder (relative paths, served under /preview/<project>/).
+    #[serde(default)]
+    pub images: Vec<String>,
+    /// Page to open for this option (relative path in the project folder).
+    #[serde(default)]
+    pub link: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -440,6 +465,10 @@ pub struct Settings {
     pub light_model: String,
     /// The chairman approves the design mockup before anything is built.
     pub approve_design: bool,
+    /// The team decides alone: questions and design choices no longer wait for the chairman.
+    pub autopilot: bool,
+    /// How many design directions the designer offers the chairman (1 = a single design).
+    pub design_options: u8,
     /// When enabled, every employee loads `tools_skill_file` (default `GEMINI.md`) into their system prompt.
     pub tools_mode: bool,
     /// Skill file loaded for all employees only when `tools_mode` is enabled.
@@ -462,6 +491,8 @@ impl Default for Settings {
             auto_retries: 3,
             light_model: String::new(),
             approve_design: true,
+            autopilot: false,
+            design_options: 5,
             tools_mode: false,
             tools_skill_file: String::new(),
             mcp: HashMap::new(),
