@@ -116,6 +116,7 @@
   color: var(--lime);
   font-weight: bold;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .xoay-body {
   margin-top: 8px;
@@ -127,10 +128,12 @@
 }
 .xoay-kpis {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 .xoay-kpis > div {
+  min-width: 0;
+  overflow: hidden;
   background: #1a1d30;
   border: 2px solid var(--line);
   padding: 4px 6px;
@@ -142,6 +145,10 @@
 .xoay-kpis b {
   font-size: 20px;
   color: var(--lime);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .xoay-kpis span {
   font-size: 13px;

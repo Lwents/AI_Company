@@ -87,6 +87,26 @@ const NAMES: Record<string, string> = {
 const NO_QUOTA = "Usage not available for this connection";
 
 const fmt = (n?: number) => (typeof n === "number" ? n.toLocaleString("vi-VN") : "?");
+function fmtCompact(n?: number): string {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "?";
+  const abs = Math.abs(n);
+  if (abs < 1000) return String(Math.trunc(n));
+  const units = [
+    [1e9, "B"],
+    [1e6, "M"],
+    [1e3, "k"],
+  ] as const;
+  for (const [div, suf] of units) {
+    if (abs >= div) {
+      const v = n / div;
+      const rounded = abs >= div * 100 ? Math.round(v) : Math.round(v * 10) / 10;
+      if (Math.abs(rounded) >= 1000 && suf === "k") return "1M";
+      if (Math.abs(rounded) >= 1000 && suf === "M") return "1B";
+      return `${rounded}${suf}`;
+    }
+  }
+  return String(Math.trunc(n));
+}
 const key = (src: number, id: string) => `${src}:${id}`;
 
 function resetIn(iso?: string): string {
@@ -362,7 +382,11 @@ function XoaySection() {
       >
         <h3 className="xoay-title clip">Xoay OpenCode Proxy</h3>
         {st && <span className={`pill ${pillCls}`}>{pillTxt}</span>}
-        {st && !st.error && <span className="xoay-ok-badge">{fmt(st.requests_ok ?? 0)} OK</span>}
+        {st && !st.error && (
+          <span className="xoay-ok-badge" title={`${fmt(st.requests_ok ?? 0)} request thành công`}>
+            {fmtCompact(st.requests_ok ?? 0)} OK
+          </span>
+        )}
         <span className="muted">{open ? "▾" : "▸"}</span>
       </div>
 
@@ -393,20 +417,20 @@ function XoaySection() {
               {msg && <div className="ok small">{msg}</div>}
 
               <div className="xoay-kpis">
-                <div>
-                  <b>{fmt(st.requests_ok ?? 0)}</b>
+                <div title={`Request OK: ${fmt(st.requests_ok ?? 0)}`}>
+                  <b>{fmtCompact(st.requests_ok ?? 0)}</b>
                   <span>OK</span>
                 </div>
-                <div>
-                  <b style={{ color: "var(--text)" }}>{fmt(st.rotations ?? 0)}</b>
+                <div title={`Lượt xoay: ${fmt(st.rotations ?? 0)}`}>
+                  <b style={{ color: "var(--text)" }}>{fmtCompact(st.rotations ?? 0)}</b>
                   <span>Xoay</span>
                 </div>
-                <div>
-                  <b style={{ color: "var(--amber)" }}>{fmt(st.quota_hits ?? 0)}</b>
+                <div title={`Hết quota: ${fmt(st.quota_hits ?? 0)}`}>
+                  <b style={{ color: "var(--amber)" }}>{fmtCompact(st.quota_hits ?? 0)}</b>
                   <span>Quota</span>
                 </div>
-                <div>
-                  <b style={{ color: (st.requests_failed ?? 0) > 0 ? "var(--red)" : "var(--muted)" }}>{fmt(st.requests_failed ?? 0)}</b>
+                <div title={`Lỗi: ${fmt(st.requests_failed ?? 0)}`}>
+                  <b style={{ color: (st.requests_failed ?? 0) > 0 ? "var(--red)" : "var(--muted)" }}>{fmtCompact(st.requests_failed ?? 0)}</b>
                   <span>Lỗi</span>
                 </div>
               </div>
@@ -416,8 +440,11 @@ function XoaySection() {
                   IP: <b className="ok">{st.exit_ip || "—"}</b>
                   {st.latency_ms ? ` (${st.latency_ms}ms)` : ""}
                 </span>
-                <span>
-                  ⚡KA: <b className={st.daemon_ready ? "ok" : "warn"}>{st.daemon_ready ? `${st.keepalive_hits ?? 0}/${st.keepalive_misses ?? 0}` : "tắt"}</b>
+                <span title={st.daemon_ready ? `Keep-Alive: ${fmt(st.keepalive_hits ?? 0)} tái dùng / ${fmt(st.keepalive_misses ?? 0)} mới` : "Keep-Alive đang tắt"}>
+                  ⚡KA:{" "}
+                  <b className={st.daemon_ready ? "ok" : "warn"}>
+                    {st.daemon_ready ? `${fmtCompact(st.keepalive_hits ?? 0)}/${fmtCompact(st.keepalive_misses ?? 0)}` : "tắt"}
+                  </b>
                 </span>
                 <span>
                   Luồng: <b>{st.in_flight ?? 0}/{st.max_concurrent_per_exit ?? 4}</b>
