@@ -156,7 +156,7 @@ pub async fn briefing(store: &S, project: &Project, dir: &Path) -> String {
 fn light_employee(store: &S, emp: &Employee) -> Employee {
     let mut e = emp.clone();
     let light = store.with(|s| s.settings.light_model.trim().to_string());
-    if !light.is_empty() && e.provider != ProviderId::Mock {
+    if !light.is_empty() && e.provider != ProviderId::Mock && crate::config::same_model_family(&e.model, &light) {
         e.model = light;
     }
     e

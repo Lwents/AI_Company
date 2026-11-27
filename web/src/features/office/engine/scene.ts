@@ -39,6 +39,22 @@ export interface Actor {
   leaving: boolean;
 }
 
+/** The chairman, walked around by the user (arrow keys / WASD / on-screen pad). */
+export interface Player {
+  x: number;
+  y: number;
+  facing: 1 | -1;
+  walk: number;
+  moving: boolean;
+}
+
+export interface Keys {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+}
+
 /** World → device pixels: screen = o + world * scale, where scale = k / U. */
 export interface View {
   scale: number;
@@ -76,6 +92,17 @@ export interface Scene {
   view: View;
   cam: Camera;
   drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null;
+  /** Null until the first frame places the chairman at their desk. */
+  player: Player | null;
+  keys: Keys;
+  /** Employee close enough to the player to interact with. */
+  nearby: string | null;
+  /** The camera follows the player (turned off by dragging / "fit"). */
+  follow: boolean;
+  /** Movement is paused while a menu or chat is open. */
+  frozen: boolean;
+  /** Layout of the current frame (for helpers that need it outside the frame loop). */
+  playerLayout: import("../layout").Layout | null;
 }
 
 export function createScene(): Scene {
@@ -92,5 +119,11 @@ export function createScene(): Scene {
     view: { scale: 1, ox: 0, oy: 0, k: 1, fitK: 1 },
     cam: { manual: false, zoom: 2, cx: 0, cy: 0 },
     drag: null,
+    player: null,
+    keys: { up: false, down: false, left: false, right: false },
+    nearby: null,
+    follow: false,
+    frozen: false,
+    playerLayout: null,
   };
 }

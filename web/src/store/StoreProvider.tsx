@@ -1,11 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import type { CompanyState, ProviderId, ServerEvent } from "@/api/types";
+import type { CompanyState, ProviderId, ScreenEvent, ServerEvent } from "@/api/types";
 import { connectSocket } from "@/api/socket";
 import { initialData, reducer } from "./reducer";
 
 /** Animation-only events: not stored, just forwarded to the office. */
 export type LiveEvent = Extract<ServerEvent, { type: "handoff" } | { type: "meeting" }>;
 type LiveListener = (e: LiveEvent) => void;
+type ScreenListener = (id: string, e: ScreenEvent) => void;
 
 interface StoreValue {
   state: CompanyState | null;
@@ -19,6 +20,11 @@ interface StoreValue {
   setSelectedEmployee: (id: string | null) => void;
   tab: string;
   setTab: (t: string) => void;
+  /** Subscribe to what employees' computers show. Returns an unsubscribe function. */
+  onScreen: (fn: ScreenListener) => () => void;
+  /** Employee whose screen is open (watching them work), if any. */
+  watching: string | null;
+  setWatching: (id: string | null) => void;
 }
 
 const StoreCtx = createContext<StoreValue | null>(null);
@@ -37,6 +43,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [data, dispatch] = useReducer(reducer, initialData);
   const [connected, setConnected] = useState(false);
   const listeners = useRef(new Set<LiveListener>());
+  const screenListeners = useRef(new Set<ScreenListener>());
+  const [watching, setWatching] = useState<string | null>(null);
+  const onScreen = useMemo(
+    () => (fn: ScreenListener) => {
+      screenListeners.current.add(fn);
+      return () => {
+        screenListeners.current.delete(fn);
+      };
+    },
+    [],
+  );
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
   const [tab, setTab] = useState(loadTab);
@@ -63,6 +80,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return connectSocket((e) => {
       if (e.type === "handoff" || e.type === "meeting") {
         for (const fn of listeners.current) fn(e);
+      } else if (e.type === "screen") {
+        for (const fn of screenListeners.current) fn(e.id, e.screen);
       } else {
         dispatch(e);
       }
@@ -89,8 +108,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSelectedEmployee,
       tab,
       setTab,
+      onScreen,
+      watching,
+      setWatching,
     }),
-    [data, connected, onLive, selectedProject, selectedEmployee, tab],
+    [data, connected, onLive, selectedProject, selectedEmployee, tab, onScreen, watching],
   );
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>;
 }

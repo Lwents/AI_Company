@@ -1,4 +1,5 @@
 import { useStore } from "@/store";
+import { Avatar } from "@/shared/Avatar";
 import { kpiRows } from "@/features/kpi/scoring";
 import { ROLE_LABEL } from "@/shared/labels";
 import { num, usd } from "@/shared/format";
@@ -67,9 +68,7 @@ export function KpiPanel() {
               }}
             >
               <span className="pos">{r.score > 0 ? `#${i + 1}` : "·"}</span>
-              <span className="avatar sm" style={{ background: r.e.color }}>
-                {r.e.name.slice(0, 1)}
-              </span>
+              <Avatar e={r.e} small />
               <div className="grow">
                 <div className="row between">
                   <span>

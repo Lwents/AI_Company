@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Avatar } from "@/shared/Avatar";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { confirmDialog } from "@/shared/ui/Dialog";
@@ -127,9 +128,7 @@ export function EmployeeCard({ e, open, onToggle }: { e: Employee; open: boolean
     <section className={`card emp ${open ? "selected" : ""} ${e.enabled ? "" : "disabled"}`}>
       <div className="row between click" onClick={onToggle}>
         <div className="row gap6">
-          <span className="avatar" style={{ background: e.color }}>
-            {e.name.slice(0, 1)}
-          </span>
+          <Avatar e={e} />
           <div>
             <b>{e.name}</b> <span className="muted">· {ROLE_LABEL[e.role]}</span>{" "}
             {hasSkill && <span className="pill green">Skill</span>}
@@ -146,6 +145,14 @@ export function EmployeeCard({ e, open, onToggle }: { e: Employee; open: boolean
           <label>
             Tên
             <input value={draft.name} onChange={(ev) => set("name", ev.target.value)} />
+          </label>
+          <label>
+            Giới tính (hình nhân vật)
+            <select value={draft.gender ?? ""} onChange={(ev) => set("gender", ev.target.value as Employee["gender"])}>
+              <option value="">Tự đoán theo tên</option>
+              <option value="male">Nam</option>
+              <option value="female">Nữ</option>
+            </select>
           </label>
           <label>
             Vai trò

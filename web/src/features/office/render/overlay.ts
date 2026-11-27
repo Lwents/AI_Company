@@ -3,6 +3,7 @@ import { ROLE_LABEL } from "@/shared/labels";
 import type { Layout } from "../layout";
 import { FONT, U, type Actor, type Scene } from "../engine/scene";
 import { hitTest, hitTestBookshelf, toScreen } from "../engine/camera";
+import { playerSeated } from "../engine/player";
 import { C } from "../sprites/draw";
 
 /** Touch screen (phone / tablet): hints talk about fingers instead of the mouse. */
@@ -51,7 +52,9 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     const s = toScreen(scene, mz.x + mz.w - 50 * U, mz.y + 4);
     tag(ctx, s.x, s.y, scene.meeting.topic, fs * 0.85, C.white, C.outline, "center");
   }
-  const chs = toScreen(scene, l.chairman.x, l.chairman.y + 16);
+  const seated = playerSeated(scene, l);
+  const pl = scene.player;
+  const chs = seated || !pl ? toScreen(scene, l.chairman.x, l.chairman.y + 16) : toScreen(scene, pl.x, pl.y + 16);
   tag(ctx, chs.x, chs.y, "Kiên·Chủ tịch", fs, C.yellow, C.outline, "center");
   const rcs = toScreen(scene, l.receptionist.x, l.receptionist.y + 16);
   tag(ctx, rcs.x, rcs.y, "Lễ tân", fs, "rgba(20,18,31,0.85)", C.cyan, "center");
@@ -70,6 +73,14 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
   }
   for (const a of scene.actors.values()) bubble(ctx, scene, a, st.runtime[a.id]?.status ?? "idle", now, fs);
 
+  // In reach of the walking chairman: how to interact (hidden while a menu / chat is open).
+  const near = scene.nearby && !seated && !scene.frozen ? scene.actors.get(scene.nearby) : null;
+  if (near) {
+    const s = toScreen(scene, near.x, near.y - 52);
+    const pulse = Math.floor(now / 400) % 2 === 0;
+    tag(ctx, s.x, s.y - fs, TOUCH ? "Bấm ⬆ ở giữa: Tương tác" : "E / Enter: Tương tác", fs, pulse ? C.yellow : C.white, C.outline, "center");
+  }
+
   const m = scene.mouse;
   if (m && !scene.drag?.moved) {
     const hit = hitTest(scene, m);
@@ -77,7 +88,14 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
       const e = hit.emp;
       const rt = st.runtime[hit.id];
       const s = toScreen(scene, hit.x + 18, hit.y - 60);
-      hoverCard(ctx, s.x, s.y, [`${e.name} · ${ROLE_LABEL[e.role]}`, e.provider === "mock" ? "Mock (giả lập)" : e.model, rt?.note || (hit.leaving ? "Đang rời công ty" : "Đang rảnh")], fs);
+      const proj = rt?.projectId && rt.status !== "idle" ? st.projects.find((x) => x.id === rt.projectId)?.name : undefined;
+      hoverCard(
+        ctx,
+        s.x,
+        s.y,
+        [`${e.name} · ${ROLE_LABEL[e.role]}`, e.provider === "mock" ? "Mock (giả lập)" : e.model, rt?.note || (hit.leaving ? "Đang rời công ty" : "Đang rảnh"), ...(proj ? [`Dự án: ${proj}`] : [])],
+        fs,
+      );
     } else {
       const shelf = hitTestBookshelf(scene, m);
       if (shelf) {
@@ -91,12 +109,10 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     8,
     ctx.canvas.height - fs - 8,
     TOUCH
-      ? scene.cam.manual
-        ? "Chụm 2 ngón: zoom · Kéo: di chuyển · Nút ⤢: vừa khung"
-        : "Chụm 2 ngón hoặc bấm + để phóng to"
-      : scene.cam.manual
-        ? "Lăn chuột / nút +− : zoom · Kéo: di chuyển · Nhấp đúp: vừa khung"
-        : "Lăn chuột hoặc bấm + để phóng to",
+      ? "Nút mũi tên: đi · Nút giữa: tương tác · Chụm 2 ngón: zoom"
+      : scene.follow
+        ? "Mũi tên / WASD: đi · E: tương tác · Lăn chuột: zoom · Nhấp đúp: vừa khung"
+        : "Mũi tên / WASD: đi lại · Lăn chuột / nút +−: zoom · Kéo: di chuyển",
     fs * 0.85,
     "rgba(20,18,31,0.7)",
     C.silver,

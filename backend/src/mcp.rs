@@ -210,7 +210,7 @@ fn skip_mcp_for_phase(phase: &str) -> bool {
 fn browser_phase(phase: &str) -> bool {
     matches!(
         phase,
-        "design" | "implement" | "review" | "test" | "design_review" | "final_qa" | "security" | "documentation" | "release"
+        "design" | "implement" | "review" | "test" | "design_review" | "final_qa" | "security" | "documentation" | "release" | "adhoc"
     )
 }
 

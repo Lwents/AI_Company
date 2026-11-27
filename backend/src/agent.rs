@@ -77,6 +77,28 @@ fn take_inbox(store: &S, emp_id: &str, project_id: &str) -> Option<String> {
 const KEEP_FULL_TOOL_TURNS: usize = 3;
 const PRUNED_TOOL_CHARS: usize = 2000;
 
+/// Marks an employee's browser as drivable for as long as their job runs.
+struct BrowserLive {
+    store: S,
+    id: String,
+}
+
+impl BrowserLive {
+    fn new(store: &S, id: &str, on: bool) -> Option<Self> {
+        on.then(|| {
+            store.browser_live.lock().unwrap().insert(id.to_string());
+            BrowserLive { store: store.clone(), id: id.to_string() }
+        })
+    }
+}
+
+impl Drop for BrowserLive {
+    fn drop(&mut self) {
+        self.store.browser_live.lock().unwrap().remove(&self.id);
+        self.store.remote.lock().unwrap().remove(&self.id);
+    }
+}
+
 fn image_mime(path: &str) -> Option<&'static str> {
     match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
@@ -357,7 +379,9 @@ const LIGHT_PHASES: [&str; 9] = [
 pub async fn run(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobResult, String> {
     let mut job = job;
     let light = store.with(|s| s.settings.light_model.trim().to_string());
-    let mut model: Option<String> = (!light.is_empty() && LIGHT_PHASES.contains(&job.phase)).then_some(light);
+    let own_model = store.employee(&job.employee_id).map(|e| e.model).unwrap_or_default();
+    let mut model: Option<String> =
+        (!light.is_empty() && LIGHT_PHASES.contains(&job.phase) && config::same_model_family(&own_model, &light)).then_some(light);
     let original = job.employee_id.clone();
     for attempt in 0..3 {
         let r = run_tracked(store, job.clone(), model.as_deref(), cancel).await;
@@ -371,7 +395,7 @@ pub async fn run(store: &S, job: Job, cancel: &CancellationToken) -> Result<JobR
         let sup_name = sup.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "Hệ thống".into());
         let sup_id = sup.as_ref().map(|s| s.id.clone()).unwrap_or_else(|| "system".into());
         let backup = store.with(|s| s.settings.fallback_model.trim().to_string());
-        let backup = (!backup.is_empty() && backup != current_model).then_some(backup);
+        let backup = (!backup.is_empty() && backup != current_model && config::same_model_family(current_model, &backup)).then_some(backup);
 
         // On policy refusal, only retry once on a DIFFERENT model (backup or colleague on another model);
         // retrying on the exact same model just wastes tokens and loops.
@@ -481,6 +505,12 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
     let dir = store.dir_of(&project);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
 
+    // Project work comes first: pause the side task the chairman gave this person (it resumes later).
+    if job.phase != "adhoc" {
+        if let Some(t) = store.side_jobs.lock().unwrap().get(&emp.id) {
+            t.cancel();
+        }
+    }
     // One person does one job at a time.
     let lock = store.emp_lock(&emp.id);
     let _guard = lock.lock().await;
@@ -512,6 +542,8 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
     } else {
         Some(crate::mcp::Session::start(&root, &dir, emp.role, job.phase, &mcp_overrides).await)
     };
+    // While this job runs with a browser, the chairman can drive it from the screen view.
+    let _browser_live = BrowserLive::new(store, &emp.id, mcp.as_ref().is_some_and(|m| m.has("browser__browser_evaluate")));
     if let Some(m) = &mcp {
         for t in &m.tools {
             tools.push(llm::ToolDef { name: t.name.clone(), description: t.description.clone(), schema: t.schema.clone() });
@@ -586,12 +618,25 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
             p = store.llm_slots.acquire() => p.map_err(|e| e.to_string())?,
             _ = cancel.cancelled() => return Err("aborted".into()),
         };
-        let res = llm::chat(
-            store,
-            LlmRequest { employee: &emp_now, system: &system, messages: &messages, tools: &tools, max_tokens: 32000, meta: &meta },
-            cancel,
-        )
-        .await;
+        // The model can think for a while: meanwhile play the chairman's clicks in this employee's browser.
+        let res = {
+            let chat = llm::chat(
+                store,
+                LlmRequest { employee: &emp_now, system: &system, messages: &messages, tools: &tools, max_tokens: 32000, meta: &meta },
+                cancel,
+            );
+            tokio::pin!(chat);
+            loop {
+                tokio::select! {
+                    r = &mut chat => break r,
+                    _ = store.remote_notify.notified(), if mcp.is_some() => {
+                        if let Some(m) = mcp.as_mut() {
+                            crate::screen::run_remote(store, &emp.id, pid, m, &dir).await;
+                        }
+                    }
+                }
+            }
+        };
         drop(permit);
         let res = match res {
             Ok(r) => r,
@@ -605,6 +650,7 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         store.add_usage(&emp.id, pid, res.input_tokens, res.output_tokens);
         if !res.text.trim().is_empty() {
             store.log_activity(&emp.id, pid, "llm", &res.text);
+            crate::screen::note(store, &emp.id, pid, &res.text);
         }
         if res.stop == Stop::Refusal || (res.tool_calls.is_empty() && looks_like_refusal(&res.text)) {
             let msg = if res.text.trim().is_empty() {
@@ -690,6 +736,25 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
                 }
                 let note = if r.images.is_empty() { short(&r.text, 800).to_string() } else { format!("{} [{} ảnh]", short(&r.text, 600), r.images.len()) };
                 store.log_activity(&emp.id, pid, if r.is_error { "error" } else { "result" }, note);
+                if c.name.starts_with("browser__") {
+                    // Someone is watching: snap the page after each action, for their screen only (not sent to the model).
+                    let mut extra = None;
+                    let mut text = r.text.clone();
+                    let skip = ["take_screenshot", "close", "console_messages", "network_requests", "tabs", "install"];
+                    if r.images.is_empty() && !r.is_error && crate::screen::watched(store, &emp.id) && !skip.iter().any(|k| c.name.ends_with(k)) {
+                        let shot = m.call("browser__browser_take_screenshot", &serde_json::json!({ "type": "jpeg" })).await;
+                        if let Some(rel) = shot.text.split("path: '").nth(1).and_then(|s| s.split('\'').next()) {
+                            // Don't leave these snapshots in the project folder.
+                            if let Ok(f) = tools::safe_path(&ctx.dir, &rel.replace("\\\\", "/").replace('\\', "/")) {
+                                let _ = std::fs::remove_file(f);
+                            }
+                        }
+                        text.push('\n');
+                        text.push_str(&shot.text);
+                        extra = shot.images.into_iter().next();
+                    }
+                    crate::screen::browser(store, &emp.id, pid, &label, &text, &c.input, r.images.first().or(extra.as_ref()));
+                }
                 results.push(ToolResult { id: c.id.clone(), content: r.text, is_error: r.is_error, images: r.images });
                 continue;
             }
@@ -708,7 +773,19 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
                 return Err("aborted".into());
             }
             store.log_activity(&emp.id, pid, if is_error { "error" } else { "result" }, short(&content, 800));
+            // Mirror the work on the employee's screen (the chairman can watch it live).
+            let path = c.input.get("path").and_then(Value::as_str).unwrap_or_default();
+            match c.name.as_str() {
+                "write_file" if !is_error => crate::screen::code(store, &emp.id, pid, &ctx.dir, path, "write", &c.input),
+                "edit_file" if !is_error => crate::screen::code(store, &emp.id, pid, &ctx.dir, path, "edit", &c.input),
+                "read_file" if !is_error => crate::screen::code(store, &emp.id, pid, &ctx.dir, path, "read", &c.input),
+                "run_command" => crate::screen::terminal(store, &emp.id, pid, c.input.get("command").and_then(Value::as_str).unwrap_or_default(), &content, !is_error),
+                _ => {}
+            }
             results.push(ToolResult { id: c.id.clone(), content, is_error, images: vec![] });
+        }
+        if let Some(m) = mcp.as_mut() {
+            crate::screen::run_remote(store, &emp.id, pid, m, &dir).await;
         }
         let step_num = step + 1;
         let left = max_steps.saturating_sub(step_num);

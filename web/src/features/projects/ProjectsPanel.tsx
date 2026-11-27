@@ -3,6 +3,7 @@ import { api } from "@/api/http";
 import { useStore } from "@/store";
 import type { Project } from "@/api/types";
 import { ProjectCard } from "./ProjectCard";
+import { IdleRow } from "./TeamRow";
 import "./projects.css";
 
 export function ProjectsPanel() {
@@ -108,6 +109,9 @@ export function ProjectsPanel() {
         <button className="primary" disabled={busy || !request.trim()} onClick={submit}>
           Giao cho CEO
         </button>
+      </section>
+      <section className="card idle-card">
+        <IdleRow />
       </section>
 
       {projects.length === 0 && <p className="muted center">Chưa có dự án nào.</p>}

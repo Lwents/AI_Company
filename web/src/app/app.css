@@ -93,18 +93,21 @@ aside {
 nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 8px 0;
+  gap: 3px;
+  padding: 8px 6px 0;
   border-bottom: 3px solid var(--line);
   background: #1e2238;
 }
 nav button {
+  /* Twelve tabs fit on two even rows in the side panel. */
+  flex: 1 1 auto;
   background: var(--card);
   box-shadow: var(--bevel);
   border-bottom: 0;
   margin-bottom: 0;
-  padding: 2px 10px 4px;
+  padding: 2px 6px 4px;
   color: var(--muted);
+  white-space: nowrap;
   top: 0 !important;
 }
 nav button.on {
@@ -203,7 +206,8 @@ nav button.on {
   nav button {
     flex: none;
     white-space: nowrap;
-    padding: 4px 12px 6px;
+    padding: 6px 12px 8px;
+    min-height: 40px;
   }
   .only-mobile {
     display: inline-flex;

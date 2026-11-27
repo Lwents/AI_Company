@@ -33,6 +33,8 @@ export interface Employee {
   skillText?: string;
   skillFile?: string;
   color: string;
+  /** "" = guess from the name. */
+  gender?: "" | "male" | "female";
   enabled: boolean;
 }
 
@@ -79,6 +81,8 @@ export type Phase =
 export type ProjectStatus = "running" | "paused" | "stopped" | "awaiting_approval" | "operating" | "done" | "failed";
 export interface Project {
   id: string;
+  /** Employees working on this project (picked when it starts). */
+  team: string[];
   name: string;
   slug: string;
   request: string;
@@ -276,4 +280,13 @@ export type ServerEvent =
   | { type: "kpi"; id: string; kpi: Kpi }
   | { type: "settings"; settings: Settings }
   | { type: "handoff"; from: string; to: string; text: string }
-  | { type: "meeting"; projectId: string; participants: string[]; topic: string; active: boolean };
+  | { type: "meeting"; projectId: string; participants: string[]; topic: string; active: boolean }
+  | { type: "screen"; id: string; screen: ScreenEvent };
+
+/** Something that appeared on an employee's computer (real content of their work). */
+export type ScreenEvent = { ts: number; projectId?: string } & (
+  | { app: "code"; op: "write" | "edit" | "read"; path: string; content: string; from: number | null; to: number | null }
+  | { app: "terminal"; command: string; output: string; ok: boolean }
+  | { app: "browser"; action: string; url: string | null; title: string | null; image: string | null; full?: boolean }
+  | { app: "note"; text: string }
+);

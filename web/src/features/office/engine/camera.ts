@@ -128,6 +128,7 @@ export function dragTo(scene: Scene, d: P) {
   if (!g) return;
   if (Math.hypot(d.x - g.x, d.y - g.y) > 6) g.moved = true;
   if (!g.moved) return;
+  scene.follow = false;
   const c = scene.cam;
   if (!c.manual) {
     c.manual = true;
@@ -139,4 +140,5 @@ export function dragTo(scene: Scene, d: P) {
 
 export function resetCamera(scene: Scene) {
   scene.cam.manual = false;
+  scene.follow = false;
 }

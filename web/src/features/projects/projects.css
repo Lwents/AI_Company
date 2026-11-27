@@ -99,3 +99,42 @@
   flex-shrink: 0;
   margin-left: auto;
 }
+
+/* Project team / idle people: a row of faces, green dot when working. */
+.team-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.team-faces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.team-faces .face {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 1px;
+  position: relative;
+  font-size: 15px;
+}
+.team-faces .face.busy::after {
+  content: "";
+  position: absolute;
+  left: 20px;
+  top: 1px;
+  width: 8px;
+  height: 8px;
+  background: var(--green);
+  border: 1px solid var(--line);
+}
+.idle-card {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+@media (max-width: 700px) {
+  .team-faces .face {
+    min-height: 36px;
+  }
+}

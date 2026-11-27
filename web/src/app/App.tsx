@@ -5,6 +5,7 @@ import { DialogHost } from "@/shared/ui/Dialog";
 import { Office } from "@/features/office/Office";
 import { EmployeeDrawer } from "@/features/staff/EmployeeDrawer";
 import { GuideModal } from "@/features/guide/GuideModal";
+import { ScreenView } from "@/features/screen/ScreenView";
 import { Header } from "./Header";
 import { ActivityTicker } from "./ActivityTicker";
 import { TABS } from "./tabs";
@@ -12,7 +13,7 @@ import "./app.css";
 
 /** Page shell: header, office on the left, tabbed panels on the right. */
 export function App() {
-  const { state, tab, setTab } = useStore();
+  const { state, tab, setTab, watching } = useStore();
   const active = TABS.find((t) => t.id === tab) ?? TABS[0];
   const Panel = active.panel;
   // Phones show one thing at a time: the office or a panel (the "Văn phòng" tab only exists there).
@@ -64,6 +65,11 @@ export function App() {
         </aside>
       </main>
       {guideOpen && <GuideModal onClose={() => setGuideOpen(false)} />}
+      {watching && (
+        <ErrorBoundary label="Màn hình nhân viên">
+          <ScreenView />
+        </ErrorBoundary>
+      )}
       <DialogHost />
     </div>
   );

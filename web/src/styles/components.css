@@ -433,3 +433,23 @@ td {
   margin-left: 6px;
   vertical-align: middle;
 }
+
+/* Character portrait inside an avatar square. */
+.avatar.char {
+  overflow: hidden;
+  padding: 0;
+}
+.avatar.char canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  display: block;
+}
+
+/* Long option descriptions: three lines until the card is picked. */
+.clamp3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

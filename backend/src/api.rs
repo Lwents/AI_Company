@@ -49,6 +49,8 @@ pub fn router(store: S) -> Router {
         .route("/api/tools-skill", get(get_tools_skill).put(put_tools_skill).delete(delete_tools_skill))
         .route("/api/mcp", get(mcp_servers))
         .route("/api/chat", post(chairman_chat))
+        .route("/api/screen/{id}", get(employee_screen))
+        .route("/api/screen/{id}/input", post(screen_input))
         .route("/preview/{id}/{*path}", get(preview))
         .route("/preview/{id}/", get(preview_index))
         .route("/api/cases/{id}/reply", post(case_reply))
@@ -151,7 +153,7 @@ struct NewProject {
     local_path: String,
 }
 
-fn slugify(s: &str) -> String {
+pub(crate) fn slugify(s: &str) -> String {
     let map = |c: char| -> char {
         let c = c.to_lowercase().next().unwrap_or(c);
         const GROUPS: [(&str, char); 7] = [
@@ -215,6 +217,7 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         retry_at: 0,
         autopilot: false,
         design_options: 0,
+        team: vec![],
         meetings: 0,
         tech: body.tech.trim().chars().take(300).collect(),
         versions: vec![],
@@ -567,9 +570,14 @@ struct ApprovalBody {
 }
 
 async fn resolve_approval(State(store): State<S>, Path(id): Path<String>, Json(b): Json<ApprovalBody>) -> ApiResult {
+    // Nobody waits for this card any more (the server restarted since it was asked): act on the choice here.
+    let orphan = !store.has_waiter(&id);
     let a = store
         .resolve_approval(&id, b.decision == "approve", b.answer.filter(|s| !s.trim().is_empty()))
         .ok_or_else(|| bad("Yêu cầu không còn chờ duyệt"))?;
+    if orphan && !a.options.is_empty() && a.status == ApprovalStatus::Answered {
+        crate::chat::follow_up_choice(&store, &a);
+    }
     Ok(Json(json!(a)))
 }
 
@@ -720,6 +728,30 @@ async fn chairman_chat(State(store): State<S>, Json(b): Json<ChatBody>) -> ApiRe
     // The employee answers (and acts on simple orders) even when they're not working right now.
     crate::chat::spawn_reply(&store, m.clone());
     Ok(Json(json!(m)))
+}
+
+/// Recent screen events of an employee (what their computer showed), oldest first.
+async fn employee_screen(State(store): State<S>, Path(id): Path<String>) -> ApiResult {
+    crate::screen::watch(&store, &id);
+    Ok(Json(json!({ "events": crate::screen::history(&store, &id) })))
+}
+
+/// The chairman drives an employee's browser (click / scroll / type / open a page).
+async fn screen_input(State(store): State<S>, Path(id): Path<String>, Json(b): Json<Value>) -> ApiResult {
+    let cmd = crate::screen::check_command(&b).map_err(bad)?;
+    if !store.browser_live.lock().unwrap().contains(&id) {
+        return Err((StatusCode::CONFLICT, "Nhân viên chưa mở trình duyệt (chỉ điều khiển được khi họ đang làm việc với trình duyệt)".into()));
+    }
+    crate::screen::watch(&store, &id);
+    {
+        let mut q = store.remote.lock().unwrap();
+        let list = q.entry(id).or_default();
+        if list.len() < 30 {
+            list.push(cmd);
+        }
+    }
+    store.remote_notify.notify_waiters();
+    Ok(Json(json!({ "queued": true })))
 }
 
 async fn resource_accounts() -> ApiResult {

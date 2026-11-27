@@ -76,6 +76,9 @@ pub struct Employee {
     #[serde(default)]
     pub skill_file: String,
     pub color: String,
+    /// "" (guess from the name) | "male" | "female": how the character looks in the office.
+    #[serde(default)]
+    pub gender: String,
     #[serde(default = "yes")]
     pub enabled: bool,
 }
@@ -219,6 +222,9 @@ pub struct Project {
     /// Design directions to offer for this project; 0 = the company setting.
     #[serde(default)]
     pub design_options: u8,
+    /// Employees working on this project (picked when it starts, so parallel projects don't share people).
+    #[serde(default)]
+    pub team: Vec<String>,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,
@@ -559,5 +565,10 @@ pub enum ServerEvent {
         participants: Vec<String>,
         topic: String,
         active: bool,
+    },
+    /// Something appeared on an employee's computer (code typed, a command run, a page opened).
+    Screen {
+        id: String,
+        screen: serde_json::Value,
     },
 }

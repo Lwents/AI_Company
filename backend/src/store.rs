@@ -40,6 +40,19 @@ pub struct Store {
     pub ops_busy: Mutex<std::collections::HashSet<String>>,
     /// Projects that were running when the server stopped (see RESUME_ON_START).
     pub interrupted: Mutex<Vec<String>>,
+    /// What each employee's computer showed recently (see `screen.rs`); memory only.
+    pub screens: Mutex<HashMap<String, std::collections::VecDeque<serde_json::Value>>>,
+    /// When someone last looked at each employee's screen (ms): live screenshots only while watched.
+    pub screen_watch: Mutex<HashMap<String, u64>>,
+    /// The chairman's clicks / scrolls / typing waiting to be played in an employee's browser.
+    pub remote: Mutex<HashMap<String, Vec<serde_json::Value>>>,
+    pub remote_notify: tokio::sync::Notify,
+    /// Employees whose job has a browser open right now (remote control is possible).
+    pub browser_live: Mutex<std::collections::HashSet<String>>,
+    /// When each employee was last told the chairman used their browser (ms).
+    pub remote_told: Mutex<HashMap<String, u64>>,
+    /// Side tasks the chairman gave in chat (employee -> stop button): main project work pauses them.
+    pub side_jobs: Mutex<HashMap<String, CancellationToken>>,
     pub data_dir: PathBuf,
     pub workspace_dir: PathBuf,
 }
@@ -75,7 +88,8 @@ impl Store {
             }
         }
         for a in &mut st.approvals {
-            if a.status == ApprovalStatus::Pending {
+            // Design choices (with pictures) stay open across restarts: the chairman can still pick one.
+            if a.status == ApprovalStatus::Pending && a.options.is_empty() {
                 a.status = ApprovalStatus::Denied;
             }
         }
@@ -94,6 +108,13 @@ impl Store {
             ops_cancels: Mutex::new(HashMap::new()),
             ops_busy: Mutex::new(std::collections::HashSet::new()),
             interrupted: Mutex::new(interrupted),
+            screens: Mutex::new(HashMap::new()),
+            screen_watch: Mutex::new(HashMap::new()),
+            remote: Mutex::new(HashMap::new()),
+            remote_notify: tokio::sync::Notify::new(),
+            browser_live: Mutex::new(std::collections::HashSet::new()),
+            remote_told: Mutex::new(HashMap::new()),
+            side_jobs: Mutex::new(HashMap::new()),
             data_dir,
             workspace_dir,
         })
@@ -110,7 +131,7 @@ impl Store {
     }
 
     pub fn emit(&self, e: ServerEvent) {
-        if !matches!(e, ServerEvent::Handoff { .. } | ServerEvent::Meeting { .. } | ServerEvent::Runtime { .. }) {
+        if !matches!(e, ServerEvent::Handoff { .. } | ServerEvent::Meeting { .. } | ServerEvent::Runtime { .. } | ServerEvent::Screen { .. }) {
             self.dirty.store(true, Ordering::Relaxed);
         }
         if let Ok(s) = serde_json::to_string(&e) {
@@ -226,6 +247,7 @@ impl Store {
             skill_text: String::new(),
             skill_file: String::new(),
             color: config::COLORS[n % config::COLORS.len()].into(),
+            gender: String::new(),
             enabled: true,
         };
         self.upsert_employee(e.clone());
@@ -498,6 +520,24 @@ impl Store {
         })?;
         self.emit(ServerEvent::Upsert { coll: "approvals", item: serde_json::to_value(&a).unwrap() });
         Some(a)
+    }
+
+    /// Someone (a workflow step) is waiting for this approval's answer.
+    pub fn has_waiter(&self, id: &str) -> bool {
+        self.waiters.lock().unwrap().contains_key(id)
+    }
+
+    /// Waits for the answer to an approval that is already pending (e.g. a choice card kept across a restart).
+    pub async fn wait_approval(&self, id: &str, cancel: &CancellationToken) -> Result<Approval, String> {
+        let (tx, rx) = oneshot::channel();
+        self.waiters.lock().unwrap().insert(id.to_string(), tx);
+        tokio::select! {
+            r = rx => r.map_err(|_| "approval dropped".to_string()),
+            _ = cancel.cancelled() => {
+                self.waiters.lock().unwrap().remove(id);
+                Err("aborted".into())
+            }
+        }
     }
 
     pub fn resolve_approval(&self, id: &str, approve: bool, answer: Option<String>) -> Option<Approval> {

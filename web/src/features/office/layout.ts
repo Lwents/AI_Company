@@ -221,3 +221,24 @@ export function route(l: Layout, from: P, to: P): P[] {
   pts.push(to);
   return pts;
 }
+
+/**
+ * Where the player's feet may stand: inside a room (away from its walls), the hallway, the side
+ * corridors, or a doorway joining them. Walls are the gaps between these areas, so the only way
+ * from one area to another is through a door.
+ */
+export function walkable(l: Layout, x: number, y: number): boolean {
+  const inRect = (rx: number, ry: number, rw: number, rh: number) => x >= rx && x <= rx + rw && y >= ry && y <= ry + rh;
+  // Hallway band between the two rows of rooms.
+  if (inRect(w(10), w(121), w(746), w(24))) return true;
+  for (const c of l.corridors) if (inRect(c.x + w(3), c.y - w(4), c.w - w(6), c.h + w(4))) return true;
+  for (const z of l.zones) {
+    // Room interior: clear of the side walls and the back wall (shelves, windows).
+    const top = z.topRow ? w(30) : w(16);
+    const bottom = z.topRow ? w(8) : w(6);
+    if (inRect(z.x + w(7), z.y + top, z.w - w(14), z.h - top - bottom)) return true;
+    // Doorway through the wall facing the hallway (or the corridor).
+    if (inRect(z.door.x - w(9), z.door.y - w(18), w(18), w(36))) return true;
+  }
+  return false;
+}

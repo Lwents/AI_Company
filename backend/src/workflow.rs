@@ -38,8 +38,56 @@ pub(crate) fn meeting(store: &S, pid: &str, participants: Vec<String>, topic: &s
     store.emit(ServerEvent::Meeting { project_id: pid.into(), participants, topic: topic.into(), active });
 }
 
+tokio::task_local! {
+    /// The project whose workflow is running on this task (see `start`).
+    static CURRENT_PROJECT: String;
+}
+
+/// People of a role who work on the current project: its team when it has one, else everyone.
+pub(crate) fn team_staff(store: &S, role: Role) -> Vec<Employee> {
+    let all = store.staff(role);
+    let team = CURRENT_PROJECT.try_with(|p| p.clone()).ok().and_then(|pid| store.project(&pid)).map(|p| p.team).unwrap_or_default();
+    if team.is_empty() {
+        return all;
+    }
+    let mine: Vec<Employee> = all.iter().filter(|e| team.contains(&e.id)).cloned().collect();
+    // Someone hired for a role the team lacks still gets the work.
+    if mine.is_empty() { all } else { mine }
+}
+
 pub(crate) fn first(store: &S, roles: &[Role]) -> Option<Employee> {
-    roles.iter().find_map(|r| store.staff(*r).into_iter().next())
+    roles.iter().find_map(|r| team_staff(store, *r).into_iter().next())
+}
+
+/// Picks a team for a project: per role the people least busy with other running projects
+/// (one per role; developers: every free one, so they can code in parallel).
+pub fn assign_team(store: &S, pid: &str) -> Vec<String> {
+    let running: Vec<String> = store.cancels.lock().unwrap().keys().filter(|k| k.as_str() != pid).cloned().collect();
+    let (emps, load) = store.with(|s| {
+        let mut load: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for p in s.projects.iter().filter(|p| running.contains(&p.id)) {
+            for id in &p.team {
+                *load.entry(id.clone()).or_default() += 1;
+            }
+        }
+        (s.employees.iter().filter(|e| e.enabled).cloned().collect::<Vec<_>>(), load)
+    });
+    let mut team = vec![];
+    let mut roles: Vec<Role> = vec![];
+    for e in &emps {
+        if !roles.contains(&e.role) {
+            roles.push(e.role);
+        }
+    }
+    for role in roles {
+        let people: Vec<&Employee> = emps.iter().filter(|e| e.role == role).collect();
+        let min = people.iter().map(|e| load.get(&e.id).copied().unwrap_or(0)).min().unwrap_or(0);
+        let free: Vec<&Employee> = people.into_iter().filter(|e| load.get(&e.id).copied().unwrap_or(0) == min).collect();
+        let take = if role == Role::Dev { free.len() } else { 1 };
+        team.extend(free.into_iter().take(take).map(|e| e.id.clone()));
+    }
+    store.update_project(pid, |p| p.team = team.clone());
+    team
 }
 
 fn everyone(store: &S) -> Vec<String> {
@@ -95,10 +143,16 @@ pub fn start(store: &S, pid: &str) {
         p.error.clear();
         p.retry_at = 0;
     });
+    if store.project(pid).is_some_and(|p| p.team.is_empty()) {
+        let team = assign_team(store, pid);
+        let names: Vec<String> = team.iter().map(|id| store.display_name(id)).collect();
+        store.post_message(Some(pid), "system", "all", format!("Nhóm dự án: {}.", names.join(", ")), "system");
+    }
     let store = store.clone();
     let pid = pid.to_string();
     tokio::spawn(async move {
-        let r = run_project(&store, &pid, &token).await;
+        // Workflow steps pick their people from this project's team.
+        let r = CURRENT_PROJECT.scope(pid.clone(), run_project(&store, &pid, &token)).await;
         store.cancels.lock().unwrap().remove(&pid);
         match r {
             Err(e) if e != ABORTED && !token.is_cancelled() => {
@@ -415,7 +469,7 @@ fn discussion_panel(store: &S) -> Vec<Employee> {
         Role::Legal,
         Role::Accountant,
     ];
-    ROLES.iter().filter_map(|r| store.staff(*r).into_iter().next()).collect()
+    ROLES.iter().filter_map(|r| team_staff(store, *r).into_iter().next()).collect()
 }
 
 async fn kickoff(store: &S, p: &Project, ceo: &Employee, all: &[String], cancel: &CancellationToken) -> Result<agent::JobResult, String> {
@@ -743,9 +797,33 @@ async fn phase_design(store: &S, p: &Project, cancel: &CancellationToken) -> Res
     let dir = store.dir_of(p);
     let run = |task: String| agent::run(store, Job { employee_id: designer.id.clone(), project_id: p.id.clone(), phase: "design", ticket_id: None, case_id: None, task }, cancel);
     // First design of a project the chairman approves: offer several directions to pick from.
-    let n = design_option_count(store, p);
-    if n > 1 && !dir.join("design").join("mockup.html").is_file() && store.with(|s| s.settings.approve_design) {
-        run(design_options_task(&preview, n, &revision_note(p))).await?;
+    if design_option_count(store, p) > 1 && !dir.join("design").join("mockup.html").is_file() && store.with(|s| s.settings.approve_design) {
+        // One job per option: each gets the full step budget, options already made (e.g. before a
+        // restart) are kept, and a late failure still leaves the ones that were finished.
+        for (i, id) in DESIGN_OPTION_IDS.iter().enumerate() {
+            // The chairman may change the number from the chat while options are being made.
+            let n = store.project(&p.id).map(|q| design_option_count(store, &q)).unwrap_or(1);
+            if i >= n {
+                break;
+            }
+            if dir.join("design/options").join(id).join("mockup.html").is_file() {
+                continue;
+            }
+            let made = design_options(&dir);
+            if let Err(e) = run(design_option_task(&preview, id, n, &made, &revision_note(p))).await {
+                if e == "aborted" || cancel.is_cancelled() {
+                    return Err(e);
+                }
+                if dir.join("design/options").join(id).join("mockup.html").is_file() {
+                    continue; // The option is there; only the polishing ran out of steps.
+                }
+                if design_options(&dir).len() >= 2 {
+                    store.post_message(Some(&p.id), &designer.id, "chairman", format!("Phương án {} chưa làm xong ({}), em gửi anh/chị các phương án đã hoàn thành.", id.to_uppercase(), short_text(&e, 120)), "chat");
+                    break;
+                }
+                return Err(e);
+            }
+        }
         let opts = design_options(&dir);
         if !opts.is_empty() {
             let single = opts.len() == 1;
@@ -819,14 +897,52 @@ pub fn release_pending(store: &S, project_id: Option<&str>) -> usize {
     ids.iter().filter(|id| store.resolve_approval(id, false, None).is_some()).count()
 }
 
-/// The chairman asks for changes on a finished project: a new revision round from the kickoff.
+/// A paused draft project for work about another product (from chat): its own folder, nothing runs
+/// until the chairman presses Continue.
+pub fn draft_project(store: &S, name: &str, request: &str) -> Project {
+    let id = crate::store::new_id();
+    let base = crate::api::slugify(name);
+    let p = Project {
+        id: id.clone(),
+        name: name.chars().take(80).collect(),
+        slug: format!("{}-{}", if base.is_empty() { "du-an" } else { &base }, &id[id.len() - 4..]),
+        request: request.chars().take(2000).collect(),
+        feedback: vec![],
+        phase: Phase::Plan,
+        status: ProjectStatus::Paused,
+        budget_usd: store.with(|s| s.settings.default_budget_usd),
+        spent_usd: 0.0,
+        report: String::new(),
+        error: String::new(),
+        ticket_seq: 0,
+        release_rounds: 0,
+        design_reviews: 0,
+        qa_rounds: 0,
+        security_reviews: 0,
+        auto_retries: 0,
+        retry_at: 0,
+        autopilot: false,
+        design_options: 0,
+        team: vec![],
+        meetings: 0,
+        tech: String::new(),
+        versions: vec![],
+        existing: false,
+        source: String::new(),
+        dir: String::new(),
+        created_at: now_ms(),
+        updated_at: now_ms(),
+    };
+    let _ = std::fs::create_dir_all(store.dir_of(&p));
+    store.insert_project(p.clone());
+    p
+}
+
+/// The chairman asks for changes (project finished, paused or stopped): a new revision round from the kickoff.
 pub fn request_changes(store: &S, id: &str, feedback: &str) -> Result<(), String> {
-    let p = store.project(id).ok_or("Dự án không tồn tại")?;
+    store.project(id).ok_or("Dự án không tồn tại")?;
     if store.cancels.lock().unwrap().contains_key(id) {
-        return Err("dự án đang chạy, yêu cầu được gửi tới người đang làm".into());
-    }
-    if !matches!(p.phase, Phase::AwaitingApproval | Phase::Done | Phase::Operating | Phase::Launch) && p.status != ProjectStatus::Done {
-        return Err("dự án chưa làm xong".into());
+        return Err("dự án đang chạy (tạm dừng dự án rồi nhắn lại để mở vòng sửa đổi); yêu cầu đã được gửi tới người đang làm".into());
     }
     // A live product keeps its customers; operations pause while the team builds the new version.
     store.stop_ops(id);
@@ -842,10 +958,23 @@ pub fn request_changes(store: &S, id: &str, feedback: &str) -> Result<(), String
     Ok(())
 }
 
-fn design_options_task(preview: &str, n: usize, revision: &str) -> String {
-    let ids = DESIGN_OPTION_IDS[..n].join(", ");
+fn design_option_task(preview: &str, id: &str, n: usize, made: &[ApprovalOption], revision: &str) -> String {
+    let x = id.to_uppercase();
+    let others = if made.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = made.iter().map(|o| format!("{}. \"{}\"", o.id.to_uppercase(), o.title)).collect();
+        format!(" Các phương án đã có (đọc README.md của chúng; phương án {x} phải KHÁC HẲN về phong cách, bảng màu, font, bố cục, cảm giác — không chỉ đổi màu): {}.", list.join(", "))
+    };
+    let lead = if id == "a" { " Đây là phương án bạn đề xuất nhất." } else { "" };
     format!(
-        "Đọc docs/PLAN.md, docs/DECISIONS.md và docs/REQUIREMENTS.md. Chủ tịch sẽ XEM ẢNH và CHỌN 1 trong {n} HƯỚNG THIẾT KẾ, nên hãy làm ĐÚNG {n} phương án KHÁC HẲN NHAU (phong cách, bảng màu, font, bố cục, cảm giác — không phải chỉ đổi màu), đều đẹp, hiện đại, chuyên nghiệp theo kỹ năng Designer của bạn. Phương án A là phương án bạn đề xuất nhất.\nVới mỗi phương án X trong {ids}:\n- design/options/X/README.md: dòng đầu \"# <Tên phương án ngắn gọn>\", sau đó 2–4 câu tiếng Việt: ý tưởng, cảm giác, hợp với ai, màu chính (hex), font.\n- design/options/X/tokens.css: biến CSS của phương án.\n- design/options/X/mockup.html: bản mẫu tĩnh tự chứa (import ./tokens.css) của MÀN HÌNH QUAN TRỌNG NHẤT với nội dung thật, hoàn chỉnh, đẹp ở cả máy tính và điện thoại. Chưa cần làm mọi trang.\n- ẢNH CHỤP (bắt buộc nếu có công cụ trình duyệt): mở {preview}design/options/X/mockup.html, browser_resize 1280x800 rồi browser_take_screenshot với filename \"design/options/X/desktop.png\" và fullPage true; browser_resize 375x812 rồi chụp filename \"design/options/X/mobile.png\" (fullPage true). Xem ảnh, chỗ nào chưa đẹp thì sửa rồi chụp lại.\nChưa viết docs/DESIGN.md, design/tokens.css hay design/mockup.html (làm sau khi Chủ tịch chọn). Nếu Chủ tịch nhắn đổi số phương án trong lúc bạn làm thì làm theo số mới. Xong gọi finish với tóm tắt các phương án.{revision}"
+        "Đọc docs/PLAN.md, docs/DECISIONS.md và docs/REQUIREMENTS.md. Chủ tịch sẽ XEM ẢNH và CHỌN 1 trong {n} hướng thiết kế. Lượt này bạn CHỈ làm PHƯƠNG ÁN {x}, đẹp, hiện đại, chuyên nghiệp theo kỹ năng Designer của bạn.{lead}{others}
+Tạo trong design/options/{id}/:
+- README.md: dòng đầu \"# <Tên phương án ngắn gọn>\", sau đó 2–4 câu tiếng Việt: ý tưởng, cảm giác, hợp với ai, màu chính (hex), font.
+- tokens.css: biến CSS của phương án.
+- mockup.html: bản mẫu tĩnh tự chứa (import ./tokens.css) của MÀN HÌNH QUAN TRỌNG NHẤT với nội dung thật, hoàn chỉnh, đẹp ở cả máy tính và điện thoại. Chưa cần làm mọi trang.
+- ẢNH CHỤP (bắt buộc nếu có công cụ trình duyệt): mở {preview}design/options/{id}/mockup.html, browser_resize 1280x800 rồi browser_take_screenshot với filename \"design/options/{id}/desktop.png\" và fullPage true; browser_resize 375x812 rồi chụp filename \"design/options/{id}/mobile.png\" (fullPage true). Xem ảnh, sửa chỗ chưa đẹp rồi chụp lại — tối đa 2 vòng sửa, đủ đẹp thì dừng.
+Không sửa phương án khác, chưa viết docs/DESIGN.md hay design/mockup.html. Xong gọi finish với tóm tắt phương án {x}.{revision}"
     )
 }
 
@@ -862,10 +991,83 @@ fn design_final_task(preview: &str, pick: &ApprovalOption, feedback: Option<&str
 
 /// Options the designer produced: a folder with a mockup, a title from its README and any screenshots.
 fn design_options(dir: &Path) -> Vec<ApprovalOption> {
+    design_options_at(dir, "design/options")
+}
+
+/// A headless Chrome / Edge on this machine, for screenshots the designer didn't take.
+fn headless_browser() -> Option<std::path::PathBuf> {
+    let mut cands: Vec<std::path::PathBuf> = vec![];
+    if cfg!(windows) {
+        for base in [std::env::var("ProgramFiles(x86)").ok(), std::env::var("ProgramFiles").ok(), std::env::var("LOCALAPPDATA").ok()].into_iter().flatten() {
+            cands.push(Path::new(&base).join("Microsoft/Edge/Application/msedge.exe"));
+            cands.push(Path::new(&base).join("Google/Chrome/Application/chrome.exe"));
+        }
+    } else {
+        for b in ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", "/usr/bin/microsoft-edge", "/snap/bin/chromium"] {
+            cands.push(b.into());
+        }
+        // The browser Playwright downloaded for the employees' MCP.
+        if let Ok(home) = std::env::var("HOME") {
+            if let Ok(rd) = std::fs::read_dir(Path::new(&home).join(".cache/ms-playwright")) {
+                for d in rd.flatten() {
+                    cands.push(d.path().join("chrome-linux/chrome"));
+                    cands.push(d.path().join("chrome-linux64/chrome"));
+                }
+            }
+        }
+    }
+    cands.into_iter().find(|p| p.is_file())
+}
+
+/// Screenshots (1280px and 375px) for design options that have none, so the chairman always sees pictures.
+pub(crate) async fn ensure_shots(p: &Project, dir: &Path, opts: &mut [ApprovalOption]) {
+    let Some(bin) = headless_browser() else { return };
+    for o in opts.iter_mut().filter(|o| o.images.is_empty()) {
+        let folder = o.link.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+        let url = format!("{}{}", crate::config::preview_url(&p.id), o.link);
+        for (file, size) in [("desktop.png", "1280,900"), ("mobile.png", "390,844")] {
+            let out = dir.join(&folder).join(file);
+            let profile = std::env::temp_dir().join(format!("aico-shot-{}", crate::store::new_id()));
+            let run = tokio::process::Command::new(&bin)
+                .args(["--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check"])
+                .arg(format!("--user-data-dir={}", profile.display()))
+                .arg(format!("--window-size={size}"))
+                .arg(format!("--screenshot={}", out.display()))
+                .arg(&url)
+                .kill_on_drop(true)
+                .output();
+            let _ = tokio::time::timeout(Duration::from_secs(40), run).await;
+            let _ = std::fs::remove_dir_all(&profile);
+            if out.is_file() {
+                o.images.push(format!("{folder}/{file}"));
+            }
+        }
+    }
+}
+
+/// "A · Gambit" / "Phương án A: Gambit" → "Gambit" (the card already shows the letter).
+fn strip_option_letter(title: &str, id: &str) -> String {
+    let up = id.to_uppercase();
+    let mut t = title.trim();
+    for prefix in ["Phương án ", "Mẫu ", "Option ", ""] {
+        if let Some(rest) = t.strip_prefix(&format!("{prefix}{up}")).or_else(|| t.strip_prefix(&format!("{prefix}{id}"))) {
+            let rest = rest.trim_start();
+            // Only when the letter is followed by a separator, so "Aurora" stays "Aurora".
+            if let Some(r) = rest.strip_prefix(['·', '.', ':', '-', '–', '—', ')']) {
+                t = r.trim_start();
+                break;
+            }
+        }
+    }
+    t.to_string()
+}
+
+/// Same, for option folders under `base` (e.g. design ideas made as a side task).
+pub(crate) fn design_options_at(dir: &Path, base: &str) -> Vec<ApprovalOption> {
     DESIGN_OPTION_IDS
         .iter()
         .filter_map(|id| {
-            let rel = format!("design/options/{id}");
+            let rel = format!("{base}/{id}");
             let d = dir.join(&rel);
             if !d.join("mockup.html").is_file() {
                 return None;
@@ -875,7 +1077,7 @@ fn design_options(dir: &Path) -> Vec<ApprovalOption> {
             let title = lines
                 .next()
                 .filter(|l| l.starts_with('#'))
-                .map(|l| l.trim_start_matches('#').trim().to_string())
+                .map(|l| strip_option_letter(l.trim_start_matches('#').trim(), id))
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| format!("Phương án {}", id.to_uppercase()));
             let note: String = lines.collect::<Vec<_>>().join("\n").chars().take(600).collect();
@@ -886,7 +1088,7 @@ fn design_options(dir: &Path) -> Vec<ApprovalOption> {
 }
 
 /// Which option the answer picks ("Chọn phương án B …", "b", "B: …") and any extra feedback.
-fn parse_choice(answer: &str, opts: &[ApprovalOption]) -> (Option<usize>, Option<String>) {
+pub(crate) fn parse_choice(answer: &str, opts: &[ApprovalOption]) -> (Option<usize>, Option<String>) {
     // Byte offsets found in `lower` are only valid in the original when lowercasing kept the length.
     let lower = answer.trim().to_lowercase();
     let answer = if lower.len() == answer.trim().len() { answer.trim() } else { lower.as_str() };
@@ -915,19 +1117,40 @@ fn parse_choice(answer: &str, opts: &[ApprovalOption]) -> (Option<usize>, Option
 
 /// The chairman picks a direction from screenshots. Skipped / unclear answers keep the designer's pick (A).
 async fn choose_design(store: &S, p: &Project, designer: &Employee, opts: Vec<ApprovalOption>, cancel: &CancellationToken) -> Result<(ApprovalOption, Option<String>), String> {
+    let mut opts = opts;
+    ensure_shots(p, &store.dir_of(p), &mut opts).await;
     store.set_runtime(&designer.id, EmpStatus::Waiting, "Chờ Chủ tịch chọn phương án thiết kế", Some(&p.id), None);
-    let list: String = opts.iter().map(|o| format!("- **{}. {}**", o.id.to_uppercase(), o.title)).collect::<Vec<_>>().join("\n");
-    let a = store
-        .request_choice(
+    if !autopilot(store, Some(&p.id)) {
+        store.post_message(
             Some(&p.id),
             &designer.id,
-            ApprovalKind::Question,
-            format!("Chọn phương án thiết kế \"{}\"", p.name),
-            format!("Designer làm {} phương án giao diện, mời anh/chị xem ảnh và chọn một (có thể ghi thêm góp ý):\n{list}\n\nPhương án A là đề xuất của Designer.", opts.len()),
-            opts.clone(),
-            cancel,
-        )
-        .await?;
+            "chairman",
+            format!("Em đã làm xong {} phương án thiết kế, mời anh/chị xem ảnh và chọn ở tab Duyệt — hoặc nhắn em, ví dụ \"chọn B, chữ to hơn chút\".", opts.len()),
+            "chat",
+        );
+    }
+    let list: String = opts.iter().map(|o| format!("- **{}. {}**", o.id.to_uppercase(), o.title)).collect::<Vec<_>>().join("\n");
+    let title = format!("Chọn phương án thiết kế \"{}\"", p.name);
+    // After a restart the card is still open: wait for it instead of asking twice.
+    let open = store.with(|s| {
+        s.approvals.iter().find(|a| a.project_id.as_deref() == Some(&p.id) && a.status == ApprovalStatus::Pending && a.title == title).map(|a| a.id.clone())
+    });
+    let a = match open {
+        Some(id) => store.wait_approval(&id, cancel).await?,
+        None => {
+            store
+                .request_choice(
+                    Some(&p.id),
+                    &designer.id,
+                    ApprovalKind::Question,
+                    title,
+                    format!("Designer làm {} phương án giao diện, mời anh/chị xem ảnh và chọn một (có thể ghi thêm góp ý):\n{list}\n\nPhương án A là đề xuất của Designer.", opts.len()),
+                    opts.clone(),
+                    cancel,
+                )
+                .await?
+        }
+    };
     store.set_runtime(&designer.id, EmpStatus::Idle, "", None, None);
     let answer = a.answer.unwrap_or_default();
     let (picked, feedback) = parse_choice(&answer, &opts);
@@ -1018,7 +1241,7 @@ async fn phase_data(store: &S, p: &Project, lead: &Employee, cancel: &Cancellati
 }
 
 async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
-    let devs = store.staff(Role::Dev);
+    let devs = team_staff(store, Role::Dev);
     if devs.is_empty() {
         return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
     }
@@ -1045,7 +1268,7 @@ async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Resu
         if let Some(pm) = first(store, &[Role::Pm]) {
             let mut team: Vec<String> = vec![pm.id.clone()];
             for r in [Role::Dev, Role::Reviewer, Role::Tester, Role::Designer] {
-                team.extend(store.staff(r).into_iter().map(|e| e.id));
+                team.extend(team_staff(store, r).into_iter().map(|e| e.id));
             }
             meeting(store, &p.id, team.clone(), "Họp daily", true);
             let task = format!(
@@ -1080,7 +1303,7 @@ fn ticket_pick_key(t: &Ticket) -> (u8, u8, u64) {
 /// rotating across enabled Devs. Serialising per project prevents two Devs sharing one
 /// working tree from clobbering each other's files or committing half-finished WIP together.
 pub(crate) async fn run_dev_workers(store: &S, pid: &str, cancel: &CancellationToken) -> Result<(), String> {
-    let devs = store.staff(Role::Dev);
+    let devs = team_staff(store, Role::Dev);
     if devs.is_empty() {
         return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
     }
@@ -1089,7 +1312,7 @@ pub(crate) async fn run_dev_workers(store: &S, pid: &str, cancel: &CancellationT
         if cancel.is_cancelled() {
             return Err(ABORTED.into());
         }
-        let devs = store.staff(Role::Dev);
+        let devs = team_staff(store, Role::Dev);
         if devs.is_empty() {
             return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
         }
@@ -1273,7 +1496,7 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start
             String::new()
         };
         let task = format!(
-            "{}\nDev báo: {dev_summary}{bounce_focus}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy NGAY bộ test hiện có;{browser_step} xem `git show --stat` / `git diff` đúng phạm vi ticket (KHÔNG đọc lại từ đầu đến cuối các tệp dài > 500 dòng khi test đã xanh và tiêu chí đã rõ); bổ sung/giữ lại test tự động cho ca biên nếu còn thiếu; cập nhật docs/TEST-PLAN.md. BẮT BUỘC gọi pass_ticket ngay khi đạt hết tiêu chí, hoặc fail_ticket kèm mô tả lỗi cụ thể nếu chưa đạt.",
+            "{}\nDev báo: {dev_summary}{bounce_focus}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy NGAY bộ test hiện có;{browser_step} xem `git show --stat` / `git diff` đúng phạm vi ticket (KHÔNG đọc lại từ đầu đến cuối các tệp dài > 500 dòng khi test đã xanh và tiêu chí đã rõ); bổ sung/giữ lại test tự động cho ca biên nếu còn thiếu (tên test ghi mã TC); cập nhật bộ tài liệu QA trong docs/qa/ CHỈ cho phần của ticket này (các dòng case của FR trong ticket ở TEST-CASES.md với kết quả thực tế + trạng thái, các dòng FR đó trong RTM.md, bug mới / retest trong BUGS.md; chưa có TEST-PLAN.md thì viết). BẮT BUỘC gọi pass_ticket ngay khi đạt hết tiêu chí, hoặc fail_ticket kèm mô tả lỗi cụ thể nếu chưa đạt.",
             ticket_brief(&t),
         );
         let r = match agent::run(store, Job { employee_id: tester.id.clone(), project_id: pid.into(), phase: "test", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await {
@@ -1428,9 +1651,9 @@ async fn final_qa(store: &S, p: &Project, cancel: &CancellationToken) -> Result<
     let task = format!(
         "KIỂM ĐỊNH CUỐI trước khi bàn giao Chủ tịch — tiêu chuẩn sản phẩm thương mại, không phải bài tập. Theo kỹ năng Tester của bạn:
 1. Chạy toàn bộ lint / typecheck / test / build của dự án.
-2. Đi qua TẤT CẢ tiêu chí nghiệm thu trong docs/REQUIREMENTS.md và docs/TEST-PLAN.md trên trình duyệt thật ở bản xem thử {} — cả 1280px và 375px — như một người dùng mới: luồng chính, ca biên, dữ liệu rỗng / nhiều, tải lại trang, lỗi console.
+2. Chạy lại TOÀN BỘ test case trong docs/qa/TEST-CASES.md (regression) và mọi tiêu chí nghiệm thu trong docs/REQUIREMENTS.md trên trình duyệt thật ở bản xem thử {} — cả 1280px và 375px — như một người dùng mới: luồng chính, ca biên, dữ liệu rỗng / nhiều, tải lại trang, lỗi console.
 3. Soát chất lượng tổng thể: giao diện có chỗ nào xấu / lệch / khó hiểu, chữ tiếng Việt, thông báo lỗi, tốc độ.
-Mỗi lỗi THẬT gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình, mức độ). Viết docs/QA-REPORT.md: đã kiểm gì, kết quả từng tiêu chí (đạt / chưa), lỗi còn lại. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
+Mỗi lỗi THẬT gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình, mức độ) và ghi vào docs/qa/BUGS.md. Cập nhật trạng thái mới nhất trong TEST-CASES.md và RTM.md; xuất thêm docs/qa/test-cases.csv và docs/qa/bugs.csv (mở được bằng Excel / Google Sheets). Viết docs/QA-REPORT.md dạng Test Summary Report: tổng số case, Pass / Fail / Blocked / Not Run và % đạt, số bug theo Severity và trạng thái, độ phủ RTM (FR có case đạt / tổng FR), exit criteria trong TEST-PLAN đạt chưa, rủi ro còn lại, kết luận đủ điều kiện phát hành hay không. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
         crate::config::preview_url(&p.id),
         revision_note(p)
     );
@@ -1544,9 +1767,9 @@ async fn phase_launch(store: &S, p: &Project, cancel: &CancellationToken) -> Res
     ];
     let mut team: Vec<String> = ceo.iter().map(|e| e.id.clone()).collect();
     for (role, _, _) in &jobs {
-        team.extend(store.staff(*role).into_iter().map(|e| e.id));
+        team.extend(team_staff(store, *role).into_iter().map(|e| e.id));
     }
-    team.extend(store.staff(Role::Secretary).into_iter().map(|e| e.id));
+    team.extend(team_staff(store, Role::Secretary).into_iter().map(|e| e.id));
     meeting(store, &pid, team.clone(), "Họp ra mắt sản phẩm", true);
     if let Some(ceo) = &ceo {
         store.post_message(Some(&pid), &ceo.id, "all", format!("Chủ tịch đã duyệt \"{}\". Các phòng ban chuẩn bị ra mắt!", p.name), "chat");
@@ -1600,6 +1823,14 @@ mod design_choice_tests {
 
     fn opts() -> Vec<ApprovalOption> {
         ["a", "b", "c"].iter().map(|id| ApprovalOption { id: id.to_string(), title: format!("T{id}"), note: String::new(), images: vec![], link: String::new() }).collect()
+    }
+
+    #[test]
+    fn strips_repeated_option_letter() {
+        assert_eq!(strip_option_letter("A · Gambit Bản thảo", "a"), "Gambit Bản thảo");
+        assert_eq!(strip_option_letter("Phương án B: Đấu Trường", "b"), "Đấu Trường");
+        assert_eq!(strip_option_letter("Aurora", "a"), "Aurora");
+        assert_eq!(strip_option_letter("Gambit", "a"), "Gambit");
     }
 
     #[test]

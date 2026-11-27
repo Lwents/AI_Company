@@ -6,6 +6,8 @@ import { createScene, p } from "./engine/scene";
 import { applyLiveEvent, tick } from "./engine/simulation";
 import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, hitTestBookshelf, resetCamera, startDrag, wheelFactor, zoomBy, zoomStep } from "./engine/camera";
 import { drawWorld } from "./render/world";
+import { movePlayer } from "./engine/player";
+import { ChatPopup, DPad, InteractMenu, MENU, type MenuAction } from "./Interact";
 import { compose } from "./render/overlay";
 import "./office.css";
 
@@ -15,11 +17,93 @@ import "./office.css";
  * → scaled to screen + crisp text (render/overlay).
  */
 export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
-  const { state, onLive, selectedEmployee, setSelectedEmployee, selectedProject } = useStore();
+  const { state, onLive, selectedEmployee, setSelectedEmployee, selectedProject, watching, setWatching } = useStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const scene = useRef(createScene()).current;
   const stateRef = useRef(state);
+  // Interaction with the employee next to the chairman: a menu, then an in-office chat.
+  const [menu, setMenu] = useState<{ emp: string; index: number } | null>(null);
+  const [chatWith, setChatWith] = useState<string | null>(null);
+  const menuRef = useRef(menu);
+  menuRef.current = menu;
+  scene.frozen = !!menu || !!chatWith || !!watching;
+  const [touch] = useState(() => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
+
+  const pick = (action: MenuAction, emp: string) => {
+    setMenu(null);
+    if (action === "chat") setChatWith(emp);
+    else if (action === "profile") setSelectedEmployee(emp);
+    else if (action === "screen") setWatching(emp);
+  };
+  /** E / Enter / the pad's middle button: open the menu, or confirm the highlighted choice. */
+  const interact = () => {
+    const m = menuRef.current;
+    if (m) return pick(MENU[m.index].id, m.emp);
+    if (scene.nearby && !chatWith) setMenu({ emp: scene.nearby, index: 0 });
+  };
+  const navMenu = (dir: "up" | "down") => {
+    const m = menuRef.current;
+    if (!m) return false;
+    setMenu({ ...m, index: (m.index + (dir === "down" ? 1 : MENU.length - 1)) % MENU.length });
+    return true;
+  };
+  const interactRef = useRef(interact);
+  interactRef.current = interact;
+  const navRef = useRef(navMenu);
+  navRef.current = navMenu;
+
+  // Keyboard: arrows / WASD walk, E / Enter / Space interact, Esc closes. Typing in a field is left alone.
+  useEffect(() => {
+    const KEY: Record<string, keyof typeof scene.keys> = {
+      ArrowUp: "up",
+      ArrowDown: "down",
+      ArrowLeft: "left",
+      ArrowRight: "right",
+      KeyW: "up",
+      KeyS: "down",
+      KeyA: "left",
+      KeyD: "right",
+    };
+    const typing = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+    };
+    const down = (ev: KeyboardEvent) => {
+      if (typing(ev.target) || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.code === "Escape") {
+        setMenu(null);
+        setChatWith(null);
+        return;
+      }
+      const dir = KEY[ev.code];
+      if (dir) {
+        ev.preventDefault();
+        if ((dir === "up" || dir === "down") && navRef.current(dir)) return;
+        scene.keys[dir] = true;
+        return;
+      }
+      if (ev.code === "KeyE" || ev.code === "Enter" || ev.code === "Space" || ev.code === "NumpadEnter") {
+        if (!menuRef.current && !scene.nearby) return;
+        ev.preventDefault();
+        interactRef.current();
+      }
+    };
+    const up = (ev: KeyboardEvent) => {
+      const dir = KEY[ev.code];
+      if (dir) scene.keys[dir] = false;
+    };
+    // Releasing every key when the window loses focus avoids a chairman walking forever.
+    const blur = () => Object.assign(scene.keys, { up: false, down: false, left: false, right: false });
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, [scene]);
 
   stateRef.current = state;
   scene.selectedEmployee = selectedEmployee;
@@ -53,6 +137,8 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
           scene.crown = topPerformer(st);
           crownAt = now;
         }
+        scene.playerLayout = layout;
+        movePlayer(scene, layout, dt);
         if (off.width !== p(layout.W) || off.height !== p(layout.H)) {
           off.width = p(layout.W);
           off.height = p(layout.H);
@@ -60,6 +146,12 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
         fitView(scene, canvas, wrapRef.current!, layout);
         const z = scene.view.k.toFixed(2);
         if (canvas.dataset.zoom !== z) canvas.dataset.zoom = z; // for tests / debugging
+        const pl = scene.player;
+        if (pl) {
+          const pos = `${Math.round(pl.x)},${Math.round(pl.y)}`;
+          if (canvas.dataset.player !== pos) canvas.dataset.player = pos;
+          if (canvas.dataset.nearby !== (scene.nearby ?? "")) canvas.dataset.nearby = scene.nearby ?? "";
+        }
         tick(scene, st, layout, dt, now);
         drawWorld(octx, scene, st, layout, now);
         compose(ctx, off, scene, st, layout, now);
@@ -150,6 +242,9 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
           if (!touches.size) scene.drag = null;
         }}
       />
+      {menu && <InteractMenu empId={menu.emp} index={menu.index} onPick={(a) => pick(a, menu.emp)} />}
+      {chatWith && <ChatPopup empId={chatWith} onClose={() => setChatWith(null)} />}
+      {touch && !chatWith && <DPad keys={scene.keys} onAction={() => interactRef.current()} onNav={(d) => navRef.current(d)} />}
       <div className="zoom-ctl">
         <button title="Phóng to" aria-label="Phóng to" onClick={() => zoomStep(scene, canvas(), true)}>
           <svg viewBox="0 0 10 10" aria-hidden="true">

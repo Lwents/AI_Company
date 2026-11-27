@@ -1,0 +1,490 @@
+/* Visual Studio Code look-alike (Dark Modern). */
+.vsc {
+  background: #1f1f1f;
+  font-family: system-ui, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #cccccc;
+}
+.vsc .grow {
+  flex: 1;
+}
+.vsc-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 0 0 10px;
+  background: #181818;
+  border-bottom: 1px solid #2b2b2b;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.vsc-menu {
+  display: flex;
+  gap: 2px;
+}
+.vsc-menu span {
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+.vsc-nav {
+  color: #9d9d9d;
+  margin-left: 6px;
+}
+.vsc-command {
+  flex: 1;
+  max-width: 520px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  padding: 0 10px;
+  background: #222222;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  color: #9d9d9d;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.vsc-win {
+  margin-left: auto;
+  display: flex;
+  height: 100%;
+}
+.vsc-win i {
+  font-style: normal;
+  width: 42px;
+  display: grid;
+  place-items: center;
+  color: #cccccc;
+}
+.vsc-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.vsc-activity {
+  width: 46px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #181818;
+  border-right: 1px solid #2b2b2b;
+  color: #868686;
+}
+.vsc-activity > span {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.vsc-activity > span.grow {
+  height: auto;
+}
+.vsc-activity > span.on {
+  color: #d7d7d7;
+  box-shadow: inset 2px 0 0 #0078d4;
+}
+.act-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #0078d4;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+.vsc-activity .act-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 8px;
+}
+.vsc .vsc-side {
+  width: 230px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  background: #181818;
+  border-right: 1px solid #2b2b2b;
+  min-height: 0;
+}
+.vsc .vsc-side-h {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 12px 6px 20px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #cccccc;
+}
+.vsc-root {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #cccccc;
+}
+.vsc-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.vt-row {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding-right: 10px;
+  white-space: nowrap;
+  color: #cccccc;
+}
+.vt-row:hover {
+  background: #2a2d2e;
+}
+.vt-row.on {
+  background: #37373d;
+  outline: 1px solid #0078d4;
+  outline-offset: -1px;
+}
+.vt-row.modified .vt-name,
+.vt-row.modified .vt-mark {
+  color: #e2c08d;
+}
+.vt-row.untracked .vt-name,
+.vt-row.untracked .vt-mark {
+  color: #73c991;
+}
+.vt-chev {
+  width: 10px;
+  flex-shrink: 0;
+  color: #c5c5c5;
+  font-size: 13px;
+  text-align: center;
+}
+.vt-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vt-mark {
+  margin-left: auto;
+  font-size: 11px;
+}
+.vt-dot {
+  margin-left: auto;
+  font-size: 8px;
+  color: #e2c08d;
+}
+.vi-file {
+  width: 16px;
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-align: center;
+  font-family: system-ui, sans-serif;
+}
+.vi-folder {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.vsc-side-sec {
+  padding: 5px 8px;
+  border-top: 1px solid #2b2b2b;
+  font-size: 11px;
+  font-weight: 700;
+  color: #cccccc;
+}
+.vsc .vsc-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1f1f1f;
+}
+.vsc .vsc-tabs {
+  display: flex;
+  background: #181818;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.vsc .vsc-tabs .tab {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px 0 12px;
+  font-size: 13px;
+  color: #9d9d9d;
+  background: #181818;
+  border-right: 1px solid #2b2b2b;
+  white-space: nowrap;
+}
+.vsc .vsc-tabs .tab.on {
+  background: #1f1f1f;
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 #0078d4;
+}
+.vsc-tabs .tab-x {
+  color: transparent;
+  width: 14px;
+}
+.vsc-tabs .tab.on .tab-x {
+  color: #cccccc;
+}
+.vsc-tabs .tab-dot {
+  width: 14px;
+  font-size: 9px;
+  color: #ffffff;
+}
+.vsc .vsc-tabs .tab.follow {
+  color: #3794ff;
+}
+.vsc-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  color: #a9a9a9;
+  flex-shrink: 0;
+}
+.vsc-crumbs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.vsc-crumbs em {
+  font-style: normal;
+  margin: 0 2px;
+}
+.vsc-crumbs .crumb-op {
+  color: #3794ff;
+  margin-left: 8px;
+}
+.vsc .vsc-code {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 0 40px;
+  line-height: 19px;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 13px;
+}
+.vsc .ln-n {
+  width: 52px;
+  padding-right: 22px;
+}
+.vsc .ln.cur {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px #282828;
+}
+.vsc .t-o {
+  color: #cccccc;
+}
+.vsc-welcome {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+}
+.vsc-welcome svg path {
+  fill: #2a2a2a;
+}
+.vsc-keys {
+  display: grid;
+  grid-template-columns: auto auto auto auto auto auto;
+  gap: 8px 4px;
+  align-items: center;
+  color: #9d9d9d;
+}
+.vsc-keys span {
+  grid-column: 1;
+  margin-right: 30px;
+}
+.vsc-keys kbd {
+  padding: 1px 6px;
+  border: 1px solid #3c3c3c;
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: #2a2a2a;
+  font-size: 11px;
+  color: #cccccc;
+}
+.vsc-panel {
+  height: 34%;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #2b2b2b;
+  background: #181818;
+  flex-shrink: 0;
+}
+.vsc-panel.closed {
+  height: auto;
+  min-height: 0;
+}
+.vsc-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 14px;
+  height: 32px;
+  font-size: 11px;
+  color: #9d9d9d;
+  flex-shrink: 0;
+}
+.vsc-panel-tabs button {
+  all: unset;
+  cursor: pointer;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  color: #e7e7e7;
+  box-shadow: inset 0 -1px 0 #0078d4;
+}
+.vsc-panel-tabs .term-kind {
+  font-size: 12px;
+}
+.vsc .vsc-term-body {
+  flex: 1;
+  overflow: auto;
+  padding: 2px 16px 8px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 17px;
+}
+.vsc .vsc-term-body pre {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #cccccc;
+  font: inherit;
+}
+.vsc .vsc-term-body .prompt {
+  color: #cccccc;
+}
+.vsc .vsc-term-body .cmd {
+  color: #dcdcaa;
+}
+.vsc .vsc-term-body pre.err {
+  color: #f48771;
+}
+.vsc-chat {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #181818;
+  border-left: 1px solid #2b2b2b;
+}
+.vsc-chat-h {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 12px 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.vsc-chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.vsc-msg {
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.vsc-msg .who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+.muted-c {
+  color: #8a8a8a;
+}
+.vsc-chat-input {
+  margin: 8px;
+  padding: 8px;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  background: #1f1f1f;
+  color: #8a8a8a;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  font-size: 12.5px;
+}
+.vsc-chat-input .row {
+  display: flex;
+  gap: 12px;
+}
+.vsc .vsc-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 22px;
+  padding: 0 10px 0 0;
+  background: #181818;
+  border-top: 1px solid #2b2b2b;
+  color: #cccccc;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.vsc .vsc-status span:nth-child(2) {
+  margin-left: 0;
+}
+.vsc-status .remote {
+  height: 100%;
+  padding: 0 10px;
+  display: grid;
+  place-items: center;
+  background: #0078d4;
+  color: #fff;
+}
+@media (max-width: 1150px) {
+  .vsc-chat {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .vsc .vsc-side,
+  .vsc-menu,
+  .vsc-nav,
+  .vsc-win {
+    display: none;
+  }
+  .vsc-activity {
+    width: 34px;
+  }
+  .vsc-activity > span {
+    width: 34px;
+    height: 36px;
+  }
+  .vsc .vsc-code {
+    font-size: 11.5px;
+    line-height: 16px;
+  }
+  .vsc .ln-n {
+    width: 36px;
+    padding-right: 10px;
+  }
+}

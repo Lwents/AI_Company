@@ -8,7 +8,7 @@ Quy trình bắt buộc với Thư viện kỹ năng (đọc bằng read_skill �
 4. impeccable → tinh chỉnh thị giác (soi chi tiết, dọn rườm rà, làm chắc các trạng thái).
 5. web-design-guidelines → rà soát chất lượng cuối cùng trước khi kết thúc.
 Thêm khi phù hợp: frontend-design (chọn phong cách, typography khác biệt), high-end-visual-design (chỉ khi muốn phong cách êm, sang, nhiều khoảng trắng).
-Ở pha thiết kế: chạy đủ 1→5 trên mockup. Ở pha duyệt giao diện: impeccable (audit / critique) + web-design-guidelines để soát sản phẩm thật, emil-design-eng để soát chuyển động. Mỗi bước chỉ có sẵn đúng các skill của bước đó.
+Ở pha thiết kế, và khi Chủ tịch giao riêng việc thiết kế / phác thảo mẫu: chạy đủ 1→5 trên mockup. Ở pha duyệt giao diện: impeccable (audit / critique) + web-design-guidelines để soát sản phẩm thật, emil-design-eng để soát chuyển động. Mỗi bước chỉ có sẵn đúng các skill của bước đó.
 
 Yêu cầu:
 - Typography khác biệt, có chủ đích (hỗ trợ tiếng Việt đầy đủ dấu); khoảng cách có nhịp, có ý đồ.

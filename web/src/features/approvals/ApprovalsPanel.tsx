@@ -41,6 +41,13 @@ function PendingCard({ a }: { a: Approval }) {
   return <AnswerCard a={a} />;
 }
 
+/** Pictures of an option: the ones recorded on the card, else the usual files next to its mockup (taken later). */
+function shotsOf(o: { images: string[]; link: string }): string[] {
+  if (o.images.length) return o.images;
+  const dir = o.link.includes("/") ? o.link.slice(0, o.link.lastIndexOf("/")) : "";
+  return dir ? [`${dir}/desktop.png`, `${dir}/mobile.png`] : [];
+}
+
 /** Pick one of several options (design directions) from their screenshots. */
 function ChoiceCard({ a, projectId }: { a: Approval; projectId: string }) {
   const { state } = useStore();
@@ -80,10 +87,15 @@ function ChoiceCard({ a, projectId }: { a: Approval; projectId: string }) {
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), setPicked(o.id))}
           >
             <div className="choice-shots">
-              {o.images.length === 0 && <div className="choice-noimg muted small">Chưa có ảnh chụp, bấm "Mở bản mẫu" để xem</div>}
-              {o.images.map((img) => (
+              {shotsOf(o).length === 0 && <div className="choice-noimg muted small">Chưa có ảnh chụp, bấm "Mở bản mẫu" để xem</div>}
+              {shotsOf(o).map((img) => (
                 <a key={img} href={previewUrl(projectId, img)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className={img.endsWith("mobile.png") ? "shot mobile" : "shot"}>
-                  <img src={previewUrl(projectId, img)} alt={`${o.title}: ${img.endsWith("mobile.png") ? "điện thoại" : "máy tính"}`} loading="lazy" />
+                  <img
+                    src={previewUrl(projectId, img)}
+                    alt={`${o.title}: ${img.endsWith("mobile.png") ? "điện thoại" : "máy tính"}`}
+                    loading="lazy"
+                    onError={(e) => ((e.currentTarget.parentElement as HTMLElement).style.display = "none")}
+                  />
                 </a>
               ))}
             </div>
@@ -92,7 +104,7 @@ function ChoiceCard({ a, projectId }: { a: Approval; projectId: string }) {
                 {o.id.toUpperCase()}. {o.title}
                 {o.id === a.options![0].id && <span className="pill small-pill">Đề xuất</span>}
               </b>
-              {o.note && <Markdown className="read small" text={o.note} />}
+              {o.note && <Markdown className={`read small${o.id === picked ? "" : " clamp3"}`} text={o.note} />}
               <a className="small" href={previewUrl(projectId, o.link)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
                 Mở bản mẫu ↗
               </a>

@@ -1,5 +1,12 @@
 use crate::types::{Employee, ProviderId, Role};
 
+/// Whether `other` can replace `model` on the same endpoint: same proxy prefix ("ag/…", "opencode/…")
+/// or both without one. A light / backup model from 9router must not be sent to another proxy.
+pub fn same_model_family(model: &str, other: &str) -> bool {
+    let prefix = |m: &str| m.split_once('/').map(|(p, _)| p.to_string()).unwrap_or_default();
+    prefix(model) == prefix(other)
+}
+
 pub fn role_label(r: Role) -> &'static str {
     match r {
         Role::Ceo => "CEO",
@@ -175,6 +182,7 @@ fn emp(id: &str, name: &str, role: Role, model: &str, color: usize, effort: &str
         skill_text: String::new(),
         skill_file: String::new(),
         color: COLORS[color % COLORS.len()].into(),
+        gender: String::new(),
         enabled: true,
     }
 }
@@ -201,4 +209,15 @@ pub fn default_employees() -> Vec<Employee> {
         emp("accountant", "Đức", Role::Accountant, "claude-haiku-5-5", 4, "medium"),
         emp("legal", "Hiền", Role::Legal, "claude-sonnet-5-5", 5, "medium"),
     ]
+}
+
+#[cfg(test)]
+mod family_tests {
+    #[test]
+    fn light_models_stay_on_their_proxy() {
+        use super::same_model_family as f;
+        assert!(f("ag/gemini-4-neon-xhigh(medium)", "ag/gemini-3.8-flash-high(high)"));
+        assert!(!f("opencode/deepseek-v4.1-flash-free", "ag/gemini-3.8-flash-high(high)"));
+        assert!(f("claude-sonnet-5-5", "claude-haiku-5-5"));
+    }
 }

@@ -6,6 +6,7 @@ import { PHASES, PROJECT_STATUS } from "@/shared/labels";
 import { usd } from "@/shared/format";
 import type { Project } from "@/api/types";
 import { previewUrl } from "@/shared/runtime";
+import { TeamRow } from "./TeamRow";
 
 /** Last part of a path / URL (the full value is shown on hover). */
 function shortSource(src: string): string {
@@ -72,6 +73,7 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
       <div className="bar">
         <div style={{ width: `${pct}%` }} className={pct > 90 ? "hot" : ""} />
       </div>
+      {p.team?.length > 0 && <TeamRow team={p.team} />}
       {p.error && <p className="error small">{p.error}</p>}
 
       {selected && (
