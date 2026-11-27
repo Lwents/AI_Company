@@ -130,6 +130,8 @@ pub async fn chat(req: &LlmRequest<'_>) -> Result<LlmResponse, String> {
             // Another employee just hit a rate limit on this endpoint+model: wait with them.
             super::gate_wait(&gate).await;
             let mut rb = http().post(&url).json(&body);
+            // Custom endpoints may each have their own key (CUSTOM_API_KEYS), else CUSTOM_API_KEY.
+            let key = if e.provider == ProviderId::Custom { config::custom_key_for(b).or_else(|| key.clone()) } else { key.clone() };
             if let Some(k) = &key {
                 rb = rb.bearer_auth(k);
             }

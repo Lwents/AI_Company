@@ -107,6 +107,31 @@ pub fn provider_env_key(p: ProviderId) -> Option<&'static str> {
     }
 }
 
+/// Key for one custom (OpenAI-compatible) endpoint from `CUSTOM_API_KEYS`:
+/// comma-separated `<base url>=<key>` pairs, e.g. `https://host/xoay/v1=sk-…,https://host/v1=sk-…`.
+pub fn custom_key_for(base: &str) -> Option<String> {
+    key_from_list(&std::env::var("CUSTOM_API_KEYS").ok()?, base)
+}
+
+fn key_from_list(list: &str, base: &str) -> Option<String> {
+    let want = base.trim().trim_end_matches('/');
+    list.split(',').find_map(|pair| {
+        let (url, key) = pair.trim().rsplit_once('=')?;
+        (url.trim().trim_end_matches('/') == want && !key.trim().is_empty()).then(|| key.trim().to_string())
+    })
+}
+
+#[cfg(test)]
+mod key_tests {
+    #[test]
+    fn key_per_endpoint() {
+        let list = "https://h/xoay/v1=sk-a, https://h/v1/=sk-b";
+        assert_eq!(super::key_from_list(list, "https://h/xoay/v1/").as_deref(), Some("sk-a"));
+        assert_eq!(super::key_from_list(list, "https://h/v1").as_deref(), Some("sk-b"));
+        assert_eq!(super::key_from_list(list, "https://h/other/v1"), None);
+    }
+}
+
 pub fn provider_base_url(p: ProviderId) -> Option<String> {
     match p {
         ProviderId::Openai => Some("https://api.openai.com/v1".into()),
