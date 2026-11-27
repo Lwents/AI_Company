@@ -177,7 +177,8 @@
     font-size: 16px;
   }
   .chrome-hint {
-    display: none;
+    font-size: 11px;
+    line-height: 1.35;
   }
   .thought {
     top: auto;

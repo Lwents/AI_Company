@@ -46,13 +46,10 @@ export interface Player {
   facing: 1 | -1;
   walk: number;
   moving: boolean;
-}
-
-export interface Keys {
-  up: boolean;
-  down: boolean;
-  left: boolean;
-  right: boolean;
+  /** Route to follow after a click / tap (through doors and the hallway). */
+  path: P[];
+  /** When to recompute the route to someone who keeps walking (ms). */
+  rerouteAt: number;
 }
 
 /** World → device pixels: screen = o + world * scale, where scale = k / U. */
@@ -94,13 +91,17 @@ export interface Scene {
   drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null;
   /** Null until the first frame places the chairman at their desk. */
   player: Player | null;
-  keys: Keys;
   /** Employee close enough to the player to interact with. */
   nearby: string | null;
   /** The camera follows the player (turned off by dragging / "fit"). */
   follow: boolean;
   /** Movement is paused while a menu or chat is open. */
   frozen: boolean;
+  /** Employee the chairman is walking over to talk to. */
+  talkTarget: string | null;
+  talkTries: number;
+  /** Set when the chairman reached `talkTarget`: the UI opens the interaction menu. */
+  arrived: string | null;
   /** Layout of the current frame (for helpers that need it outside the frame loop). */
   playerLayout: import("../layout").Layout | null;
 }
@@ -120,10 +121,12 @@ export function createScene(): Scene {
     cam: { manual: false, zoom: 2, cx: 0, cy: 0 },
     drag: null,
     player: null,
-    keys: { up: false, down: false, left: false, right: false },
     nearby: null,
     follow: false,
     frozen: false,
     playerLayout: null,
+    talkTarget: null,
+    talkTries: 0,
+    arrived: null,
   };
 }

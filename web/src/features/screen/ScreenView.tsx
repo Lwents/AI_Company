@@ -50,7 +50,7 @@ function useScreen(empId: string) {
 
 /** Watch an employee work: their editor, terminal and browser, live, with a chat on the side. */
 export function ScreenView() {
-  const { state, watching, setWatching } = useStore();
+  const { state, watching, setWatching, selectedProject } = useStore();
   const [chatOpen, setChatOpen] = useState(() => typeof matchMedia !== "function" || !matchMedia("(max-width: 760px)").matches);
   const id = watching!;
   const events = useScreen(id);
@@ -67,7 +67,7 @@ export function ScreenView() {
   }, [setWatching]);
 
   if (!state || !emp) return null;
-  const projectId = rt?.projectId ?? [...events].reverse().find((e) => e.projectId)?.projectId ?? null;
+  const projectId = rt?.projectId ?? [...events].reverse().find((e) => e.projectId)?.projectId ?? selectedProject ?? null;
   const project = state.projects.find((x) => x.id === projectId);
   // Colleagues who are working right now: switch between their screens.
   const busy = state.employees.filter((e) => e.enabled && (e.id === id || ["working", "thinking", "waiting"].includes(state.runtime[e.id]?.status ?? "idle")));
@@ -137,7 +137,7 @@ function Desktop({ events, busy, empId, empName, projectId, projectName }: { eve
   return (
     <div className="desktop">
       <div className="desk-area">
-        {events.length === 0 ? (
+        {events.length === 0 && !pinned ? (
           <div className="desk-idle">
             <div className="desk-logo">AI</div>
             <p>{busy ? `${empName}: ${busy}` : `Máy của ${empName} đang chờ việc.`}</p>

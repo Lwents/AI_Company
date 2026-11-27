@@ -78,7 +78,7 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
   if (near) {
     const s = toScreen(scene, near.x, near.y - 52);
     const pulse = Math.floor(now / 400) % 2 === 0;
-    tag(ctx, s.x, s.y - fs, TOUCH ? "Bấm ⬆ ở giữa: Tương tác" : "E / Enter: Tương tác", fs, pulse ? C.yellow : C.white, C.outline, "center");
+    tag(ctx, s.x, s.y - fs, TOUCH ? "Chạm để tương tác" : "Bấm để tương tác", fs, pulse ? C.yellow : C.white, C.outline, "center");
   }
 
   const m = scene.mouse;
@@ -109,10 +109,8 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     8,
     ctx.canvas.height - fs - 8,
     TOUCH
-      ? "Nút mũi tên: đi · Nút giữa: tương tác · Chụm 2 ngón: zoom"
-      : scene.follow
-        ? "Mũi tên / WASD: đi · E: tương tác · Lăn chuột: zoom · Nhấp đúp: vừa khung"
-        : "Mũi tên / WASD: đi lại · Lăn chuột / nút +−: zoom · Kéo: di chuyển",
+      ? "Chạm nhân viên: Chủ tịch đi tới để tương tác · Chạm sàn: đi tới đó · Chụm 2 ngón: zoom"
+      : "Bấm nhân viên: Chủ tịch đi tới để tương tác · Bấm sàn: đi tới đó · Lăn chuột: zoom",
     fs * 0.85,
     "rgba(20,18,31,0.7)",
     C.silver,

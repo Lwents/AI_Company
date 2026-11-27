@@ -6,8 +6,8 @@ import { createScene, p } from "./engine/scene";
 import { applyLiveEvent, tick } from "./engine/simulation";
 import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, hitTestBookshelf, resetCamera, startDrag, wheelFactor, zoomBy, zoomStep } from "./engine/camera";
 import { drawWorld } from "./render/world";
-import { movePlayer } from "./engine/player";
-import { ChatPopup, DPad, InteractMenu, MENU, type MenuAction } from "./Interact";
+import { movePlayer, walkToEmployee, walkToPoint } from "./engine/player";
+import { ChatPopup, InteractMenu, MENU, type MenuAction } from "./Interact";
 import { compose } from "./render/overlay";
 import "./office.css";
 
@@ -28,7 +28,6 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
   const menuRef = useRef(menu);
   menuRef.current = menu;
   scene.frozen = !!menu || !!chatWith || !!watching;
-  const [touch] = useState(() => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
 
   const pick = (action: MenuAction, emp: string) => {
     setMenu(null);
@@ -36,35 +35,17 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
     else if (action === "profile") setSelectedEmployee(emp);
     else if (action === "screen") setWatching(emp);
   };
-  /** E / Enter / the pad's middle button: open the menu, or confirm the highlighted choice. */
-  const interact = () => {
-    const m = menuRef.current;
-    if (m) return pick(MENU[m.index].id, m.emp);
-    if (scene.nearby && !chatWith) setMenu({ emp: scene.nearby, index: 0 });
-  };
   const navMenu = (dir: "up" | "down") => {
     const m = menuRef.current;
-    if (!m) return false;
+    if (!m) return;
     setMenu({ ...m, index: (m.index + (dir === "down" ? 1 : MENU.length - 1)) % MENU.length });
-    return true;
   };
-  const interactRef = useRef(interact);
-  interactRef.current = interact;
-  const navRef = useRef(navMenu);
-  navRef.current = navMenu;
+  const openMenuRef = useRef((id: string) => setMenu({ emp: id, index: 0 }));
+  const keysRef = useRef({ navMenu, pick });
+  keysRef.current = { navMenu, pick };
 
-  // Keyboard: arrows / WASD walk, E / Enter / Space interact, Esc closes. Typing in a field is left alone.
+  // Keyboard only drives the open menu (↑ ↓ Enter) and Esc; the chairman walks where you click.
   useEffect(() => {
-    const KEY: Record<string, keyof typeof scene.keys> = {
-      ArrowUp: "up",
-      ArrowDown: "down",
-      ArrowLeft: "left",
-      ArrowRight: "right",
-      KeyW: "up",
-      KeyS: "down",
-      KeyA: "left",
-      KeyD: "right",
-    };
     const typing = (t: EventTarget | null) => {
       const el = t as HTMLElement | null;
       return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
@@ -76,34 +57,19 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
         setChatWith(null);
         return;
       }
-      const dir = KEY[ev.code];
-      if (dir) {
+      const m = menuRef.current;
+      if (!m) return;
+      if (ev.code === "ArrowUp" || ev.code === "ArrowDown") {
         ev.preventDefault();
-        if ((dir === "up" || dir === "down") && navRef.current(dir)) return;
-        scene.keys[dir] = true;
-        return;
-      }
-      if (ev.code === "KeyE" || ev.code === "Enter" || ev.code === "Space" || ev.code === "NumpadEnter") {
-        if (!menuRef.current && !scene.nearby) return;
+        keysRef.current.navMenu(ev.code === "ArrowDown" ? "down" : "up");
+      } else if (ev.code === "Enter" || ev.code === "NumpadEnter" || ev.code === "Space") {
         ev.preventDefault();
-        interactRef.current();
+        keysRef.current.pick(MENU[m.index].id, m.emp);
       }
     };
-    const up = (ev: KeyboardEvent) => {
-      const dir = KEY[ev.code];
-      if (dir) scene.keys[dir] = false;
-    };
-    // Releasing every key when the window loses focus avoids a chairman walking forever.
-    const blur = () => Object.assign(scene.keys, { up: false, down: false, left: false, right: false });
     window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    window.addEventListener("blur", blur);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-      window.removeEventListener("blur", blur);
-    };
-  }, [scene]);
+    return () => window.removeEventListener("keydown", down);
+  }, []);
 
   stateRef.current = state;
   scene.selectedEmployee = selectedEmployee;
@@ -124,6 +90,7 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
     let raf = 0;
     let last = performance.now();
     let crownAt = 0;
+    let actorsAt = 0;
     void document.fonts?.load(`16px VT323`);
 
     const frame = (now: number) => {
@@ -138,7 +105,13 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
           crownAt = now;
         }
         scene.playerLayout = layout;
-        movePlayer(scene, layout, dt);
+        movePlayer(scene, layout, dt, now);
+        if (scene.arrived) {
+          // Walked over to someone after a click: open the interaction menu.
+          const id = scene.arrived;
+          scene.arrived = null;
+          openMenuRef.current(id);
+        }
         if (off.width !== p(layout.W) || off.height !== p(layout.H)) {
           off.width = p(layout.W);
           off.height = p(layout.H);
@@ -146,6 +119,15 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
         fitView(scene, canvas, wrapRef.current!, layout);
         const z = scene.view.k.toFixed(2);
         if (canvas.dataset.zoom !== z) canvas.dataset.zoom = z; // for tests / debugging
+        if (now - actorsAt > 1000) {
+          // Where each person is on screen (CSS pixels), for tests / debugging.
+          actorsAt = now;
+          const v = scene.view;
+          const dpr = window.devicePixelRatio || 1;
+          const pos: Record<string, [number, number]> = {};
+          for (const a of scene.actors.values()) pos[a.id] = [Math.round((v.ox + a.x * v.scale) / dpr), Math.round((v.oy + (a.y - 18) * v.scale) / dpr)];
+          canvas.dataset.actors = JSON.stringify(pos);
+        }
         const pl = scene.player;
         if (pl) {
           const pos = `${Math.round(pl.x)},${Math.round(pl.y)}`;
@@ -218,8 +200,11 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
           if (!g || g.moved) return;
           const wp = deviceToWorld(scene, devicePoint(canvas(), ev));
           const hit = hitTest(scene, wp);
-          if (hit) {
-            setSelectedEmployee(hit.id);
+          const l = scene.playerLayout;
+          if (hit && l) {
+            // The chairman walks over to them, then the interaction menu opens.
+            setMenu(null);
+            walkToEmployee(scene, l, hit.id);
             return;
           }
           const shelf = hitTestBookshelf(scene, wp);
@@ -227,6 +212,7 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
             onOpenGuide?.();
             return;
           }
+          if (scene.playerLayout && !scene.frozen) walkToPoint(scene, scene.playerLayout, wp);
           setSelectedEmployee(null);
         }}
         onPointerCancel={(ev) => {
@@ -244,7 +230,6 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
       />
       {menu && <InteractMenu empId={menu.emp} index={menu.index} onPick={(a) => pick(a, menu.emp)} />}
       {chatWith && <ChatPopup empId={chatWith} onClose={() => setChatWith(null)} />}
-      {touch && !chatWith && <DPad keys={scene.keys} onAction={() => interactRef.current()} onNav={(d) => navRef.current(d)} />}
       <div className="zoom-ctl">
         <button title="Phóng to" aria-label="Phóng to" onClick={() => zoomStep(scene, canvas(), true)}>
           <svg viewBox="0 0 10 10" aria-hidden="true">
