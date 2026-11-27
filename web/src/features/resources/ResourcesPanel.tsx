@@ -41,6 +41,7 @@ type QState = { loading?: boolean; err?: string; data?: Quota };
 
 interface XoayLog {
   at: string;
+  ts?: number;
   level: "ok" | "warn" | "err" | "info" | string;
   msg: string;
 }
@@ -603,8 +604,10 @@ function XoaySection() {
                   <div className="xoay-logs" ref={logBoxRef}>
                     {logs.length === 0 && <div className="muted">Chưa có nhật ký.</div>}
                     {logs.map((l, i) => (
-                      <div key={`${l.at}-${i}`} className="xoay-log-line">
-                        <span className="muted">{l.at}</span>{" "}
+                      <div key={`${l.ts ?? l.at}-${i}`} className="xoay-log-line">
+                        <span className="muted">
+                          {l.ts ? new Date(l.ts).toLocaleTimeString("vi-VN", { hour12: false }) : l.at}
+                        </span>{" "}
                         <span className={`xoay-lvl ${l.level}`}>[{l.level.toUpperCase()}]</span>{" "}
                         <span>{l.msg}</span>
                       </div>
