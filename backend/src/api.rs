@@ -209,6 +209,7 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         qa_rounds: 0,
         security_reviews: 0,
         auto_retries: 0,
+        retry_at: 0,
         meetings: 0,
         tech: body.tech.trim().chars().take(300).collect(),
         versions: vec![],

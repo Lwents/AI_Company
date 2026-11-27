@@ -53,6 +53,37 @@ pub(crate) fn summary_of(o: &Outcome) -> String {
 }
 
 /// Start (or resume) a project in the background from its current phase.
+const RETRY_DELAY: Duration = Duration::from_secs(300);
+
+/// Restarts a failed project after `delay`, if it is still failed with a retry pending and nobody restarted it.
+fn schedule_retry(store: &S, pid: &str, delay: Duration) {
+    let store = store.clone();
+    let pid = pid.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let pending = store.project(&pid).is_some_and(|p| p.status == ProjectStatus::Failed && p.retry_at > 0);
+        let running = store.cancels.lock().unwrap().contains_key(&pid);
+        if pending && !running {
+            store.update_project(&pid, |p| p.auto_retries += 1);
+            store.post_message(Some(&pid), "system", "chairman", "Tự chạy lại dự án sau sự cố.", "system");
+            start(&store, &pid);
+        }
+    });
+}
+
+/// After a server restart: re-arm the automatic restarts that were pending (their timers lived in memory).
+pub fn resume_pending_retries(store: &S) {
+    let now = crate::store::now_ms();
+    let pending: Vec<(String, u64)> = store.with(|s| {
+        s.projects.iter().filter(|p| p.status == ProjectStatus::Failed && p.retry_at > 0).map(|p| (p.id.clone(), p.retry_at)).collect()
+    });
+    for (id, due) in pending {
+        // Overdue ones wait a little so the server is fully up first.
+        let wait = Duration::from_millis(due.saturating_sub(now)).max(Duration::from_secs(10));
+        schedule_retry(store, &id, wait);
+    }
+}
+
 pub fn start(store: &S, pid: &str) {
     if store.cancels.lock().unwrap().contains_key(pid) {
         return;
@@ -62,6 +93,7 @@ pub fn start(store: &S, pid: &str) {
     store.update_project(pid, |p| {
         p.status = ProjectStatus::Running;
         p.error.clear();
+        p.retry_at = 0;
     });
     let store = store.clone();
     let pid = pid.to_string();
@@ -80,19 +112,9 @@ pub fn start(store: &S, pid: &str) {
                     .unwrap_or(max);
                 if tries < max {
                     store.post_message(Some(&pid), "system", "chairman", format!("Dự án gặp sự cố: {e}. Hệ thống sẽ tự chạy lại sau 5 phút (lần {}/{max}).", tries + 1), "system");
-                    let store2 = store.clone();
-                    let pid2 = pid.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(300)).await;
-                        // Only if nobody touched it in the meantime.
-                        let still = store2.project(&pid2).map(|p| p.status == ProjectStatus::Failed).unwrap_or(false);
-                        let running = store2.cancels.lock().unwrap().contains_key(&pid2);
-                        if still && !running {
-                            store2.update_project(&pid2, |p| p.auto_retries += 1);
-                            store2.post_message(Some(&pid2), "system", "chairman", "Tự chạy lại dự án sau sự cố.", "system");
-                            start(&store2, &pid2);
-                        }
-                    });
+                    let due = crate::store::now_ms() + RETRY_DELAY.as_millis() as u64;
+                    store.update_project(&pid, |p| p.retry_at = due);
+                    schedule_retry(&store, &pid, RETRY_DELAY);
                 } else {
                     store.post_message(Some(&pid), "system", "chairman", format!("Dự án gặp lỗi: {e}. Đã tự thử lại {max} lần không được, cần Chủ tịch kiểm tra rồi bấm Tiếp tục."), "system");
                 }

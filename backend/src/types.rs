@@ -210,6 +210,9 @@ pub struct Project {
     /// Automatic restarts after a failure (reset when a run completes).
     #[serde(default)]
     pub auto_retries: u32,
+    /// When a pending automatic restart is due (ms); 0 = none. Saved so a server restart keeps it.
+    #[serde(default)]
+    pub retry_at: u64,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,

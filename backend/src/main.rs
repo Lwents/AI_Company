@@ -87,6 +87,8 @@ async fn main() {
     // Customers, support, maintenance for launched products.
     ops::spawn(store.clone());
 
+    // Automatic restarts after a failure that were still pending when the server stopped.
+    workflow::resume_pending_retries(&store);
     // On a server, an update restarts the process: carry on with the projects it interrupted.
     if std::env::var("RESUME_ON_START").is_ok_and(|v| v == "1") {
         let ids = std::mem::take(&mut *store.interrupted.lock().unwrap());
