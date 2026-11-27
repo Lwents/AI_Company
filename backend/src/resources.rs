@@ -169,6 +169,131 @@ pub async fn quota(idx: usize, id: &str) -> Result<Value, String> {
     Ok(json!({ "plan": v["plan"], "tier": tier, "message": v["message"], "quotas": rows }))
 }
 
+// ---- Xoay OpenCode Proxy dashboard integration ----
+// Auto-discovers base URL + Bearer key from XOAY_URL/XOAY_API_KEY or CUSTOM_API_KEYS (entry containing "/xoay").
+
+fn xoay_from_custom_keys(list: &str) -> Option<(String, String)> {
+    for pair in list.split(',') {
+        let Some((url, key)) = pair.trim().rsplit_once('=') else { continue };
+        let u = url.trim().trim_end_matches('/');
+        let k = key.trim();
+        if u.contains("/xoay") && !k.is_empty() {
+            let base = u.strip_suffix("/v1").unwrap_or(u).trim_end_matches('/').to_string();
+            return Some((base, k.to_string()));
+        }
+    }
+    None
+}
+
+fn xoay_target() -> Option<(String, String)> {
+    let explicit_url = std::env::var("XOAY_URL").ok().map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty());
+    let explicit_key = std::env::var("XOAY_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if let (Some(u), Some(k)) = (explicit_url, explicit_key) {
+        let base = u.strip_suffix("/v1").unwrap_or(&u).trim_end_matches('/').to_string();
+        return Some((base, k));
+    }
+    let list = std::env::var("CUSTOM_API_KEYS").ok()?;
+    xoay_from_custom_keys(&list)
+}
+
+fn xoay_client(timeout_secs: u64) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap_or_default()
+}
+
+pub async fn xoay_status() -> Value {
+    let Some((base, key)) = xoay_target() else {
+        return json!({ "configured": false });
+    };
+    let url = format!("{base}/v1/xoay/status");
+    let c = xoay_client(15);
+    match c.get(&url).bearer_auth(&key).send().await {
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(mut v) => {
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("configured".into(), json!(true));
+                    o.insert("url".into(), json!(base));
+                }
+                v
+            }
+            Err(e) => json!({ "configured": true, "url": base, "error": format!("Xoay trả dữ liệu lạ: {e}") }),
+        },
+        Ok(r) => json!({ "configured": true, "url": base, "error": format!("Xoay trả lỗi HTTP {}", r.status().as_u16()) }),
+        Err(e) => json!({ "configured": true, "url": base, "error": format!("Không kết nối được Xoay ({base}): {e}") }),
+    }
+}
+
+pub async fn xoay_update_config(body: Value) -> Result<Value, String> {
+    let (base, key) = xoay_target().ok_or("Chưa cấu hình Xoay trong .env (CUSTOM_API_KEYS hoặc XOAY_URL/XOAY_API_KEY).")?;
+    // Whitelist only safe runtime controls (never keys, passwords, or rotation URLs).
+    let mut filtered = serde_json::Map::new();
+    for k in [
+        "selected_model",
+        "force_selected_model",
+        "reasoning_effort",
+        "force_reasoning_effort",
+        "prompt_mode",
+        "max_concurrent_per_exit",
+        "interval_secs",
+        "running",
+    ] {
+        if let Some(v) = body.get(k) {
+            filtered.insert(k.into(), v.clone());
+        }
+    }
+    let c = xoay_client(20);
+    let r = c
+        .post(format!("{base}/v1/xoay/config"))
+        .bearer_auth(&key)
+        .json(&Value::Object(filtered))
+        .send()
+        .await
+        .map_err(|e| format!("Không kết nối được Xoay: {e}"))?;
+    if !r.status().is_success() {
+        let code = r.status().as_u16();
+        let txt = r.text().await.unwrap_or_default();
+        return Err(format!("Xoay trả lỗi HTTP {code}: {}", txt.chars().take(200).collect::<String>()));
+    }
+    let mut v: Value = r.json().await.map_err(|e| format!("Xoay trả dữ liệu lạ: {e}"))?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("configured".into(), json!(true));
+        o.insert("url".into(), json!(base));
+    }
+    Ok(v)
+}
+
+pub async fn xoay_action(action: &str) -> Result<Value, String> {
+    let path = match action {
+        "rotate" => "/v1/xoay/rotate",
+        "check" => "/v1/xoay/check",
+        "refresh-models" => "/v1/xoay/models/refresh",
+        _ => return Err("Thao tác Xoay không hợp lệ".into()),
+    };
+    let (base, key) = xoay_target().ok_or("Chưa cấu hình Xoay trong .env.")?;
+    let c = xoay_client(if action == "rotate" { 150 } else { 30 });
+    let r = c
+        .post(format!("{base}{path}"))
+        .bearer_auth(&key)
+        .json(&json!({}))
+        .send()
+        .await
+        .map_err(|e| format!("Không kết nối được Xoay: {e}"))?;
+    if !r.status().is_success() {
+        let code = r.status().as_u16();
+        let txt = r.text().await.unwrap_or_default();
+        return Err(format!("Xoay trả lỗi HTTP {code}: {}", txt.chars().take(200).collect::<String>()));
+    }
+    let mut v: Value = r.json().await.map_err(|e| format!("Xoay trả dữ liệu lạ: {e}"))?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("configured".into(), json!(true));
+        o.insert("url".into(), json!(base));
+    }
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +303,9 @@ mod tests {
         assert_eq!(label("https://160.1.2.3"), "VPS 160.1.2.3");
         assert!(valid_id("5dfe52d3-890b"));
         assert!(!valid_id("../auth"));
+        assert_eq!(
+            xoay_from_custom_keys("https://160.250.180.133/xoay/v1=sk-a,https://160.250.180.133/v1=sk-b"),
+            Some(("https://160.250.180.133/xoay".into(), "sk-a".into()))
+        );
     }
 }

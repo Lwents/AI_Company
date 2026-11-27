@@ -89,3 +89,51 @@
 .resources .tiny {
   font-size: 0.85em;
 }
+
+/* Xoay OpenCode Proxy widget inside Resources tab */
+.xoay-card {
+  gap: 8px;
+}
+.xoay-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 5px 8px;
+  background: #1a1d30;
+  border: 2px solid var(--line);
+}
+.xoay-subhead {
+  border-top: 1px dashed #46507a;
+  padding-top: 6px;
+}
+.xoay-form {
+  background: #1e233a;
+  border: 2px solid var(--line);
+  padding: 8px 10px;
+}
+.xoay-logs {
+  background: #0f101c;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel-in);
+  padding: 6px 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 16px;
+  line-height: 1.25;
+}
+.xoay-log-line {
+  word-break: break-word;
+  padding: 1px 0;
+}
+.xoay-lvl.ok {
+  color: var(--lime);
+}
+.xoay-lvl.warn {
+  color: var(--amber);
+}
+.xoay-lvl.err {
+  color: #ff8e9e;
+}
+.xoay-lvl.info {
+  color: var(--accent-hi);
+}

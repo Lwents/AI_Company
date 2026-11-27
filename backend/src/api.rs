@@ -42,6 +42,9 @@ pub fn router(store: S) -> Router {
         .route("/api/auth/status", get(crate::auth::status))
         .route("/api/resources", get(resource_accounts))
         .route("/api/resources/{src}/{id}", get(resource_quota))
+        .route("/api/xoay", get(resource_xoay_status))
+        .route("/api/xoay/config", post(resource_xoay_config))
+        .route("/api/xoay/{action}", post(resource_xoay_action))
         .route("/api/settings", put(update_settings))
         .route("/api/tools-skill", get(get_tools_skill).put(put_tools_skill).delete(delete_tools_skill))
         .route("/api/mcp", get(mcp_servers))
@@ -728,6 +731,18 @@ async fn resource_quota(Path((src, id)): Path<(usize, String)>) -> ApiResult {
         return Err(bad("Mã tài khoản không hợp lệ"));
     }
     crate::resources::quota(src, &id).await.map(Json).map_err(|e| (StatusCode::BAD_GATEWAY, e))
+}
+
+async fn resource_xoay_status() -> ApiResult {
+    Ok(Json(crate::resources::xoay_status().await))
+}
+
+async fn resource_xoay_config(Json(body): Json<Value>) -> ApiResult {
+    crate::resources::xoay_update_config(body).await.map(Json).map_err(|e| (StatusCode::BAD_GATEWAY, e))
+}
+
+async fn resource_xoay_action(Path(action): Path<String>) -> ApiResult {
+    crate::resources::xoay_action(&action).await.map(Json).map_err(|e| (StatusCode::BAD_GATEWAY, e))
 }
 
 #[cfg(test)]
