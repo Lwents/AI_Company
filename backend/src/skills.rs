@@ -2,10 +2,11 @@
 //! Shared files live in `skills/` at the company root (`common.md` + `<role>.md`),
 //! and each employee may additionally have inline `skill_text` and/or a linked `skill_file` (.md).
 use crate::mcp::role_key;
-use crate::types::{Employee, Role};
+use crate::types::{Employee, Role, Settings};
 use std::path::{Path, PathBuf};
 
 pub const MAX_SKILL_CHARS: usize = 40_000;
+pub const MAX_TOOLS_SKILL_CHARS: usize = 120_000;
 
 /// Roles that also get the shared engineering playbook.
 fn engineering(r: Role) -> bool {
@@ -25,6 +26,93 @@ fn allowed_ext(p: &Path) -> bool {
 
 /// Resolves and reads a `.md` / `.txt` skill file (absolute path, relative to company root, or inside `skills/`).
 pub fn read_skill_file(root: &Path, raw: &str) -> Result<String, String> {
+    read_skill_file_limited(root, raw, MAX_SKILL_CHARS)
+}
+
+/// Resolves the active tools-mode skill path if configured and present on disk.
+pub fn resolve_tools_skill_path(root: &Path, raw: &str) -> Option<PathBuf> {
+    let clean = raw.trim().trim_matches('"');
+    if clean.is_empty() {
+        return None;
+    }
+    let p = Path::new(clean);
+    if !allowed_ext(p) {
+        return None;
+    }
+    let candidates: Vec<PathBuf> = if p.is_absolute() {
+        vec![p.to_path_buf()]
+    } else {
+        vec![root.join(p), root.join("skills").join(p)]
+    };
+    candidates.into_iter().find(|c| c.is_file())
+}
+
+/// Resolves and reads the global tools-mode skill file.
+pub fn read_tools_skill_file(root: &Path, raw: &str) -> Result<String, String> {
+    let target = raw.trim().trim_matches('"');
+    if target.is_empty() {
+        return Err("Chưa có tệp cho chế độ làm tools".into());
+    }
+    read_skill_file_limited(root, target, MAX_TOOLS_SKILL_CHARS)
+}
+
+/// Saves an uploaded/edited tools-mode skill file inside `data/tools-skill/` and returns its relative path.
+pub fn save_tools_skill(root: &Path, raw_name: &str, content: &str) -> Result<String, String> {
+    let trimmed = clamp_chars(content, MAX_TOOLS_SKILL_CHARS);
+    if trimmed.is_empty() {
+        return Err("Nội dung tệp trống".into());
+    }
+    let base = Path::new(raw_name.trim())
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("tools-skill.md");
+    let mut safe: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    if safe.is_empty() || safe.starts_with('.') {
+        safe = "tools-skill.md".into();
+    }
+    if !allowed_ext(Path::new(&safe)) {
+        safe.push_str(".md");
+    }
+    let dir = root.join("data").join("tools-skill");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Không tạo được thư mục lưu tệp: {e}"))?;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    let dest = dir.join(&safe);
+    std::fs::write(&dest, &trimmed).map_err(|e| format!("Không lưu được tệp: {e}"))?;
+    Ok(format!("data/tools-skill/{safe}"))
+}
+
+/// Deletes the active tools-mode skill file if it lives in `data/tools-skill/` or is `root/GEMINI.md`.
+pub fn delete_tools_skill(root: &Path, current_rel: &str) -> Result<(), String> {
+    let dir = root.join("data").join("tools-skill");
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    let clean = current_rel.trim().trim_matches('"');
+    if clean.eq_ignore_ascii_case("GEMINI.md") {
+        let legacy = root.join("GEMINI.md");
+        if legacy.is_file() {
+            let _ = std::fs::remove_file(legacy);
+        }
+    }
+    Ok(())
+}
+
+fn read_skill_file_limited(root: &Path, raw: &str, max_chars: usize) -> Result<String, String> {
     let clean = raw.trim().trim_matches('"');
     if clean.is_empty() {
         return Ok(String::new());
@@ -42,7 +130,7 @@ pub fn read_skill_file(root: &Path, raw: &str) -> Result<String, String> {
         return Err(format!("Không tìm thấy tệp skill: {clean}"));
     };
     let text = std::fs::read_to_string(&found).map_err(|e| format!("Không đọc được tệp skill {clean}: {e}"))?;
-    Ok(clamp_chars(&text, MAX_SKILL_CHARS))
+    Ok(clamp_chars(&text, max_chars))
 }
 
 /// Lists built-in markdown skill files inside `root/skills/` as `(filename, relative_path, content)`.
@@ -64,7 +152,14 @@ pub fn list_files(root: &Path) -> Vec<(String, String, String)> {
 }
 
 /// Builds the full skills section for one employee: shared role playbook + optional linked `.md` file + inline skill text.
+#[allow(dead_code)]
 pub fn for_employee(root: &Path, emp: &Employee) -> String {
+    for_employee_with_settings(root, emp, &Settings::default())
+}
+
+/// Builds the full skills section for one employee, additionally attaching `settings.tools_skill_file`
+/// to every employee ONLY when `settings.tools_mode` is enabled.
+pub fn for_employee_with_settings(root: &Path, emp: &Employee, settings: &Settings) -> String {
     let dir = root.join("skills");
     let read = |name: &str| std::fs::read_to_string(dir.join(format!("{name}.md"))).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let mut parts = vec![];
@@ -72,6 +167,17 @@ pub fn for_employee(root: &Path, emp: &Employee) -> String {
         parts.extend(read("common"));
     }
     parts.extend(read(&role_key(emp.role)));
+
+    if settings.tools_mode {
+        let tf = settings.tools_skill_file.trim().trim_matches('"');
+        if !tf.is_empty() {
+            if let Ok(content) = read_tools_skill_file(root, tf) {
+                if !content.is_empty() {
+                    parts.push(format!("## Chế độ làm tools\n{content}"));
+                }
+            }
+        }
+    }
 
     let file = emp.skill_file.trim().trim_matches('"');
     if !file.is_empty() {
@@ -289,6 +395,17 @@ mod tests {
         assert!(combined.contains("## Dev base"));
         assert!(combined.contains("Luôn viết docstring ngắn gọn."));
         assert!(combined.contains("Ưu tiên code Python thuần stdlib."));
+
+        let saved_rel = save_tools_skill(&tmp, "GEMINI.md", "Tools mode doctrine text").unwrap();
+        let mut settings = Settings::default();
+        settings.tools_skill_file = saved_rel.clone();
+        assert!(!for_employee_with_settings(&tmp, &emp, &settings).contains("Tools mode doctrine text"));
+        settings.tools_mode = true;
+        assert!(for_employee_with_settings(&tmp, &emp, &settings).contains("Tools mode doctrine text"));
+        let hr = crate::config::default_employees().into_iter().find(|e| e.role == Role::Hr).unwrap();
+        assert!(for_employee_with_settings(&tmp, &hr, &settings).contains("Tools mode doctrine text"));
+        delete_tools_skill(&tmp, &saved_rel).unwrap();
+        assert!(resolve_tools_skill_path(&tmp, &saved_rel).is_none());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

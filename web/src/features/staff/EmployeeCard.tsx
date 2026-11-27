@@ -280,16 +280,16 @@ export function EmployeeCard({ e, open, onToggle }: { e: Employee; open: boolean
               onChange={(ev) => set("skillText", ev.target.value)}
             />
             <div className="row between small muted">
-              <span>{skillMsg || "Áp dụng cùng skill mặc định của vai trò khi nhân viên nhận việc."}</span>
+              <span>{skillMsg}</span>
               <span>
                 {num(skillLen)} / {num(MAX_SKILL_CHARS)}
               </span>
             </div>
             <label>
-              Hoặc trỏ đường dẫn tệp .md (tự đọc bản mới nhất mỗi lần chạy)
+              Hoặc đường dẫn tệp .md
               <input
                 list={`skill-files-${e.id}`}
-                placeholder="vd: skills/dev.md hoặc C:\path\to\SKILL.md"
+                placeholder="vd: skills/dev.md"
                 value={draft.skillFile ?? ""}
                 onChange={(ev) => set("skillFile", ev.target.value)}
               />
@@ -303,7 +303,7 @@ export function EmployeeCard({ e, open, onToggle }: { e: Employee; open: boolean
             </label>
           </div>
           <label>
-            Chỉ dẫn riêng (thêm vào system prompt)
+            Chỉ dẫn riêng
             <textarea rows={3} value={draft.extraPrompt} onChange={(ev) => set("extraPrompt", ev.target.value)} />
           </label>
           <label className="row">

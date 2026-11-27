@@ -84,8 +84,8 @@ export function chair(ctx: Ctx, cx: number, cy: number) {
   rect(ctx, cx - 6, cy - 12, 12, 1, C.slate);
 }
 
-export function bookshelf(ctx: Ctx, x: number, y: number) {
-  rect(ctx, x - 1, y - 1, 32, 14, C.outline);
+export function bookshelf(ctx: Ctx, x: number, y: number, hovered = false) {
+  rect(ctx, x - 1, y - 1, 32, 14, hovered ? C.yellow : C.outline);
   rect(ctx, x, y, 30, 12, C.wood2);
   const books = [C.red, C.sky, C.green, C.yellow, C.plum, C.orange, C.cyan, C.white];
   for (let row = 0; row < 2; row++) {
@@ -94,6 +94,35 @@ export function bookshelf(ctx: Ctx, x: number, y: number) {
       const h = 3 + ((i + row) % 2);
       rect(ctx, x + 2 + i * 3, y + 6 + row * 6 - h, 2, h, books[(i + row * 3) % books.length]);
     }
+  }
+}
+
+/** Standing interactive library bookcase that opens the company guide. */
+export function guideBookshelf(ctx: Ctx, x: number, y: number, hovered: boolean, t: number) {
+  // Subtle floor shadow below the bookcase.
+  rect(ctx, x, y + 18, 32, 2, "rgba(10,10,20,0.35)");
+  if (hovered) {
+    rect(ctx, x - 2, y - 2, 36, 22, C.yellow);
+  }
+  rect(ctx, x - 1, y - 1, 34, 20, hovered ? C.white : C.outline);
+  rect(ctx, x, y, 32, 18, C.wood2);
+  // Top crown trim + wooden feet.
+  rect(ctx, x, y, 32, 1, C.wood4);
+  rect(ctx, x + 1, y + 17, 4, 1, C.wood1);
+  rect(ctx, x + 27, y + 17, 4, 1, C.wood1);
+  const books = [C.red, C.sky, C.green, C.yellow, C.plum, C.orange, C.cyan, C.white, C.lime];
+  for (let row = 0; row < 3; row++) {
+    const sy = y + 2 + row * 5;
+    rect(ctx, x + 2, sy, 28, 4, C.wood1);
+    for (let i = 0; i < 9; i++) {
+      const h = 3 + ((i + row) % 2);
+      const col = row === 1 && i === 4 ? C.yellow : books[(i + row * 3) % books.length];
+      rect(ctx, x + 3 + i * 3, sy + 4 - h, 2, h, col);
+    }
+  }
+  // Soft periodic glint on the golden guide book in the middle shelf.
+  if (hovered || Math.sin(t / 700) > 0.72) {
+    px(ctx, x + 15, y + 7, C.white);
   }
 }
 

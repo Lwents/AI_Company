@@ -43,6 +43,7 @@ pub fn router(store: S) -> Router {
         .route("/api/resources", get(resource_accounts))
         .route("/api/resources/{src}/{id}", get(resource_quota))
         .route("/api/settings", put(update_settings))
+        .route("/api/tools-skill", get(get_tools_skill).put(put_tools_skill).delete(delete_tools_skill))
         .route("/api/mcp", get(mcp_servers))
         .route("/api/chat", post(chairman_chat))
         .route("/preview/{id}/{*path}", get(preview))
@@ -634,6 +635,10 @@ async fn update_settings(State(store): State<S>, Json(mut s): Json<Settings>) ->
     s.max_agent_steps = s.max_agent_steps.clamp(3, 200);
     s.max_bounces = s.max_bounces.min(10);
     s.mock_delay_ms = s.mock_delay_ms.min(10_000);
+    s.tools_skill_file = s.tools_skill_file.trim().trim_matches('"').to_string();
+    if s.tools_mode {
+        crate::skills::read_tools_skill_file(&company_root(&store), &s.tools_skill_file).map_err(bad)?;
+    }
     // Keep only servers that exist in mcp.json.
     let known = crate::mcp::load_config(&company_root(&store));
     s.mcp.retain(|name, _| known.contains_key(name));
@@ -641,6 +646,54 @@ async fn update_settings(State(store): State<S>, Json(mut s): Json<Settings>) ->
     store.with(|st| st.settings = s.clone());
     store.emit(ServerEvent::Settings { settings: s.clone() });
     Ok(Json(json!(s)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolsSkillBody {
+    #[serde(default)]
+    name: String,
+    content: String,
+}
+
+async fn get_tools_skill(State(store): State<S>) -> ApiResult {
+    let root = company_root(&store);
+    let rel = store.with(|s| s.settings.tools_skill_file.clone());
+    if let Some(found) = crate::skills::resolve_tools_skill_path(&root, &rel) {
+        let content = crate::skills::read_tools_skill_file(&root, &rel).unwrap_or_default();
+        let name = found.file_name().and_then(|s| s.to_str()).unwrap_or(&rel).to_string();
+        let chars = content.chars().count();
+        Ok(Json(json!({ "exists": true, "name": name, "path": rel, "chars": chars, "content": content })))
+    } else {
+        Ok(Json(json!({ "exists": false, "name": "", "path": "", "chars": 0, "content": "" })))
+    }
+}
+
+async fn put_tools_skill(State(store): State<S>, Json(b): Json<ToolsSkillBody>) -> ApiResult {
+    let root = company_root(&store);
+    let rel = crate::skills::save_tools_skill(&root, &b.name, &b.content).map_err(bad)?;
+    let content = crate::skills::read_tools_skill_file(&root, &rel).map_err(bad)?;
+    let name = std::path::Path::new(&rel).file_name().and_then(|s| s.to_str()).unwrap_or(&rel).to_string();
+    let chars = content.chars().count();
+    let updated = store.with(|st| {
+        st.settings.tools_skill_file = rel.clone();
+        st.settings.clone()
+    });
+    store.emit(ServerEvent::Settings { settings: updated });
+    Ok(Json(json!({ "exists": true, "name": name, "path": rel, "chars": chars, "content": content })))
+}
+
+async fn delete_tools_skill(State(store): State<S>) -> ApiResult {
+    let root = company_root(&store);
+    let current = store.with(|s| s.settings.tools_skill_file.clone());
+    crate::skills::delete_tools_skill(&root, &current).map_err(bad)?;
+    let updated = store.with(|st| {
+        st.settings.tools_mode = false;
+        st.settings.tools_skill_file.clear();
+        st.settings.clone()
+    });
+    store.emit(ServerEvent::Settings { settings: updated });
+    Ok(Json(json!({ "exists": false, "name": "", "path": "", "chars": 0, "content": "" })))
 }
 
 #[derive(Deserialize)]

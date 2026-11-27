@@ -13,7 +13,7 @@ export function CostsPanel() {
     <div className="panel-body">
       <section className="card">
         <div className="big">{usd(total)}</div>
-        <p className="muted small">Tổng chi phí token (ước tính theo giá bạn đặt cho từng nhân viên; Mock tính $0).</p>
+        <p className="muted small">Tổng chi phí ước tính</p>
       </section>
       <section className="card">
         <h3>Theo nhân viên</h3>

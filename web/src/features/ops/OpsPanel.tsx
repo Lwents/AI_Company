@@ -47,9 +47,6 @@ export function OpsPanel() {
             {live ? (p.status === "operating" ? "Đang vận hành" : "Tạm dừng vận hành") : p.phase === "launch" ? "Đang chuẩn bị ra mắt" : "Chưa ra mắt"}
           </span>
         </div>
-        {!live && p.phase !== "launch" && (
-          <p className="small muted">Sản phẩm ra mắt sau khi Chủ tịch duyệt dự án (tab Dự án → Duyệt & ra mắt). Khi đó Marketing, Sales, CSKH, Pháp chế, Kế toán, Nhân sự cùng chuẩn bị.</p>
-        )}
         {live && (
           <>
             <p className="small">Cổng khách hàng (gửi link này cho khách):</p>
@@ -91,9 +88,6 @@ export function OpsPanel() {
                 Ngừng vận hành
               </button>
             </div>
-            <p className="small muted">
-              Để khách ở máy khác truy cập: đặt <code>PORTAL_BIND=0.0.0.0:8790</code> trong <code>.env</code> (chỉ mở cổng khách hàng và sản phẩm, không mở phần quản trị).
-            </p>
           </>
         )}
       </section>

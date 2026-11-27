@@ -56,7 +56,6 @@ export function KpiPanel() {
 
       <section className="card">
         <h3>Bảng xếp hạng</h3>
-        <p className="small muted">Điểm 0–100: độ ổn định (việc không lỗi), khối lượng theo vai trò, và tỉ lệ ticket đạt ngay (với Dev).</p>
         {rows.map((r, i) => {
           const g = grade(r.score);
           return (

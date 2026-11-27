@@ -452,9 +452,10 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
     };
     let mut tools = tools::tools_for(emp.role, job.phase);
     let mut system = system_prompt(&emp, &project, &dir);
-    // Skills (role playbooks + per-employee custom skills) and MCP servers (browser, docs, …) for this role.
+    // Skills (role playbooks + per-employee custom skills + optional tools-mode GEMINI.md) and MCP servers.
     let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-    system.push_str(&crate::skills::for_employee(&root, &emp));
+    let settings_snapshot = store.with(|s| s.settings.clone());
+    system.push_str(&crate::skills::for_employee_with_settings(&root, &emp, &settings_snapshot));
     // Skill library (design guides etc.): listed by name, read in full on demand with read_skill.
     let library = crate::skills::library_prompt(&root, emp.role, job.phase);
     if !library.is_empty() && !crate::mcp::light_phase(job.phase) {

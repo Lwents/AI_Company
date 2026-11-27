@@ -218,6 +218,8 @@ export interface Settings {
   fallbackModel: string;
   lightModel: string;
   approveDesign: boolean;
+  toolsMode: boolean;
+  toolsSkillFile: string;
   autoRetries: number;
   /** MCP servers switched on/off here, overriding mcp.json. */
   mcp: Record<string, boolean>;

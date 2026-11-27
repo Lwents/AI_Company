@@ -43,6 +43,19 @@ export interface Zone {
   topRow: boolean;
 }
 
+export interface InteractiveBox {
+  id: string;
+  kind: "guide";
+  label: string;
+  /** Bounding box in world units. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Whether to draw a pinned label tag right below the object. */
+  pinnedTag?: boolean;
+}
+
 export interface Layout {
   W: number;
   H: number;
@@ -50,6 +63,7 @@ export interface Layout {
   zones: Zone[];
   corridors: Array<{ x: number; y: number; w: number; h: number }>;
   desks: Map<string, P>;
+  bookshelves: InteractiveBox[];
   chairman: P;
   receptionist: P;
   entrance: P;
@@ -144,6 +158,27 @@ export function buildLayout(staff: Employee[]): Layout {
       { x: w(640), y: w(148), w: w(16), h: w(114) },
     ],
     desks,
+    bookshelves: [
+      {
+        id: "chairman-bookshelf",
+        kind: "guide",
+        label: "Tủ sách",
+        x: w(68),
+        y: w(7),
+        w: w(32),
+        h: w(18),
+        pinnedTag: true,
+      },
+      {
+        id: "ceo-bookshelf",
+        kind: "guide",
+        label: "Tủ sách",
+        x: w(176),
+        y: w(7),
+        w: w(30),
+        h: w(12),
+      },
+    ],
     chairman: pt(56, 62),
     receptionist: pt(30, 188),
     entrance: pt(56, 246),

@@ -9,6 +9,7 @@ import {
   easel,
   fridge,
   globe,
+  guideBookshelf,
   noticeBoard,
   painting,
   plant,
@@ -126,15 +127,15 @@ const FLOORS: Record<ZoneId, FloorPainter> = {
 /* ------------------------------------------------------------------ decor */
 
 const DECOR: Record<ZoneId, DecorPainter> = {
-  chairman({ ctx, x, y, h, doorX, now }) {
+  chairman({ ctx, x, y, h, doorX, now, scene }) {
     windowPane(ctx, x + 6, y + 3, 20, 8, now);
     painting(ctx, x + 34, y + 2, 16, 10);
-    bookshelf(ctx, x + 62, y + 1);
+    guideBookshelf(ctx, x + 62, y + 1, scene.hoveredBookshelf === "chairman-bookshelf", now);
     rect(ctx, x + 14, y + 26, 72, 40, C.plum);
     rect(ctx, x + 16, y + 28, 68, 36, shade(C.plum, 0.12));
     rect(ctx, doorX - 6, y + 70, 12, h - 73, C.red);
     rect(ctx, doorX - 6, y + 70, 12, 1, C.yellow);
-    globe(ctx, x + 86, y + 26, now);
+    globe(ctx, x + 88, y + 42, now);
     plant(ctx, x + 6, y + h - 6);
     // Trophy cabinet.
     rect(ctx, x + 6, y + 70, 10, 20, C.outline);
@@ -142,10 +143,10 @@ const DECOR: Record<ZoneId, DecorPainter> = {
     rect(ctx, x + 9, y + 74, 4, 4, C.yellow);
     rect(ctx, x + 9, y + 82, 4, 4, C.silver);
   },
-  ceo({ ctx, x, y, w, h, now }) {
+  ceo({ ctx, x, y, w, h, now, scene }) {
     windowPane(ctx, x + 6, y + 3, 22, 8, now);
     windowPane(ctx, x + 34, y + 3, 22, 8, now);
-    bookshelf(ctx, x + 64, y + 1);
+    bookshelf(ctx, x + 64, y + 1, scene.hoveredBookshelf === "ceo-bookshelf");
     // Rug.
     rect(ctx, x + 16, y + 30, 68, 44, C.plum);
     rect(ctx, x + 18, y + 32, 64, 40, C.red);

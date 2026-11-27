@@ -1,0 +1,57 @@
+/* Pixel-styled modal opened from the office bookshelf */
+.guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 10, 20, 0.68);
+  animation: dlg-fade 0.12s steps(3);
+}
+.guide-modal {
+  width: min(700px, 100%);
+  max-height: min(84vh, 760px);
+  background: var(--panel);
+  border: 3px solid var(--line);
+  outline: 2px solid var(--amber);
+  box-shadow: var(--bevel), 6px 6px 0 rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: dlg-pop 0.14s steps(3);
+}
+.guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--card);
+  border-bottom: 3px solid var(--line);
+  color: var(--amber);
+  font-size: 24px;
+  text-shadow: 2px 2px 0 var(--line);
+}
+.guide-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  background: #141626;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel);
+}
+.guide-icon svg {
+  width: 22px;
+  height: 22px;
+  shape-rendering: crispEdges;
+}
+.guide-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

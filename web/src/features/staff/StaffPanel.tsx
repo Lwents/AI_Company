@@ -37,9 +37,6 @@ export function StaffPanel() {
             Tuyển nhân viên
           </button>
         </div>
-        <p className="muted small">
-          Mọi vai trò đều có việc trong quy trình. Vai trò nào chưa có người thì bước đó được bỏ qua. Người mới mặc định chạy <b>Mock</b> (miễn phí); đổi sang model thật bên dưới.
-        </p>
         {err && <p className="error small">{err}</p>}
       </section>
       {DEPARTMENTS.map((d) => {

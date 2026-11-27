@@ -104,7 +104,6 @@ export function ProjectsPanel() {
         )}
         {srcMode === "git" && <input placeholder="https://github.com/ten/du-an.git" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />}
         {srcMode === "local" && <input placeholder="Đường dẫn thư mục, vd. D:\du-an\cua-khach" value={localPath} onChange={(e) => setLocalPath(e.target.value)} />}
-        <p className="small muted">{srcMode === "new" ? "PM sẽ tư vấn và hỏi bạn chọn công nghệ bằng ngôn ngữ dễ hiểu. Bàn giao kèm tài liệu đặc tả và hướng dẫn sử dụng có ảnh chụp." : srcMode === "local" ? "Đội sửa TRỰC TIẾP trong thư mục này. Thư mục dùng Git thì xem / hoàn tác thay đổi bằng Git; chưa có Git thì bản gốc được tự lưu thành v1 (.zip) trong Lịch sử." : "Đội sẽ đọc hiểu mã nguồn trước, giữ công nghệ và cấu trúc sẵn có, rồi sửa / nâng cấp đúng theo yêu cầu ở trên."}</p>
         {err && <p className="error">{err}</p>}
         <button className="primary" disabled={busy || !request.trim()} onClick={submit}>
           Giao cho CEO

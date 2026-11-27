@@ -4,7 +4,7 @@ import { topPerformer } from "@/features/kpi/scoring";
 import { buildLayout } from "./layout";
 import { createScene, p } from "./engine/scene";
 import { applyLiveEvent, tick } from "./engine/simulation";
-import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, resetCamera, startDrag, wheelFactor, zoomBy, zoomStep } from "./engine/camera";
+import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, hitTestBookshelf, resetCamera, startDrag, wheelFactor, zoomBy, zoomStep } from "./engine/camera";
 import { drawWorld } from "./render/world";
 import { compose } from "./render/overlay";
 import "./office.css";
@@ -14,7 +14,7 @@ import "./office.css";
  * the frame loop runs on its own:  simulation (engine/) → pixel world (render/world)
  * → scaled to screen + crisp text (render/overlay).
  */
-export function Office() {
+export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
   const { state, onLive, selectedEmployee, setSelectedEmployee, selectedProject } = useStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -48,6 +48,7 @@ export function Office() {
       const st = stateRef.current;
       if (st) {
         const layout = buildLayout(st.employees.filter((e) => e.enabled));
+        scene.bookshelves = layout.bookshelves;
         if (now - crownAt > 1000) {
           scene.crown = topPerformer(st);
           crownAt = now;
@@ -111,7 +112,10 @@ export function Office() {
           }
           if (ev.pointerType === "mouse") scene.mouse = deviceToWorld(scene, d);
           if (touches.size === 1) dragTo(scene, d);
-          canvas().style.cursor = scene.drag?.moved ? "grabbing" : scene.mouse && hitTest(scene, scene.mouse) ? "pointer" : "grab";
+          const empHit = scene.mouse ? hitTest(scene, scene.mouse) : null;
+          const shelfHit = !empHit && scene.mouse ? hitTestBookshelf(scene, scene.mouse) : null;
+          scene.hoveredBookshelf = shelfHit ? shelfHit.id : null;
+          canvas().style.cursor = scene.drag?.moved ? "grabbing" : empHit || shelfHit ? "pointer" : "grab";
         }}
         onPointerUp={(ev) => {
           touches.delete(ev.pointerId);
@@ -120,8 +124,18 @@ export function Office() {
           const g = scene.drag;
           scene.drag = null;
           if (!g || g.moved) return;
-          const hit = hitTest(scene, deviceToWorld(scene, devicePoint(canvas(), ev)));
-          setSelectedEmployee(hit ? hit.id : null);
+          const wp = deviceToWorld(scene, devicePoint(canvas(), ev));
+          const hit = hitTest(scene, wp);
+          if (hit) {
+            setSelectedEmployee(hit.id);
+            return;
+          }
+          const shelf = hitTestBookshelf(scene, wp);
+          if (shelf) {
+            onOpenGuide?.();
+            return;
+          }
+          setSelectedEmployee(null);
         }}
         onPointerCancel={(ev) => {
           touches.delete(ev.pointerId);
@@ -132,6 +146,7 @@ export function Office() {
         onPointerLeave={(ev) => {
           if (ev.pointerType !== "mouse") return;
           scene.mouse = null;
+          scene.hoveredBookshelf = null;
           if (!touches.size) scene.drag = null;
         }}
       />

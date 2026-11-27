@@ -1,4 +1,4 @@
-import type { Layout, P } from "../layout";
+import type { InteractiveBox, Layout, P } from "../layout";
 import { U, p, type Actor, type Scene } from "./scene";
 
 /** Most office-pixel → device-pixel magnification. Zooming out stops at "fit". */
@@ -64,6 +64,18 @@ export function hitTest(scene: Scene, pt: P): Actor | null {
     }
   }
   return best;
+}
+
+/** Interactive bookshelf under a world point (includes comfortable margin and pinned tag below). */
+export function hitTestBookshelf(scene: Scene, pt: P): InteractiveBox | null {
+  const pad = 6;
+  for (const b of scene.bookshelves) {
+    const extraBottom = b.pinnedTag ? 18 : pad;
+    if (pt.x >= b.x - pad && pt.x <= b.x + b.w + pad && pt.y >= b.y - pad && pt.y <= b.y + b.h + extraBottom) {
+      return b;
+    }
+  }
+  return null;
 }
 
 /**

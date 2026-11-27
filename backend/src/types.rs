@@ -437,6 +437,10 @@ pub struct Settings {
     pub light_model: String,
     /// The chairman approves the design mockup before anything is built.
     pub approve_design: bool,
+    /// When enabled, every employee loads `tools_skill_file` (default `GEMINI.md`) into their system prompt.
+    pub tools_mode: bool,
+    /// Skill file loaded for all employees only when `tools_mode` is enabled.
+    pub tools_skill_file: String,
     /// MCP servers switched on/off from the UI, overriding `enabled` in mcp.json (name -> on).
     pub mcp: HashMap<String, bool>,
 }
@@ -455,6 +459,8 @@ impl Default for Settings {
             auto_retries: 3,
             light_model: String::new(),
             approve_design: true,
+            tools_mode: false,
+            tools_skill_file: String::new(),
             mcp: HashMap::new(),
         }
     }

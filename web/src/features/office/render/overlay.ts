@@ -2,7 +2,7 @@ import type { CompanyState, EmpStatus } from "@/api/types";
 import { ROLE_LABEL } from "@/shared/labels";
 import type { Layout } from "../layout";
 import { FONT, U, type Actor, type Scene } from "../engine/scene";
-import { hitTest, toScreen } from "../engine/camera";
+import { hitTest, hitTestBookshelf, toScreen } from "../engine/camera";
 import { C } from "../sprites/draw";
 
 /** Touch screen (phone / tablet): hints talk about fingers instead of the mouse. */
@@ -56,6 +56,13 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
   const rcs = toScreen(scene, l.receptionist.x, l.receptionist.y + 16);
   tag(ctx, rcs.x, rcs.y, "Lễ tân", fs, "rgba(20,18,31,0.85)", C.cyan, "center");
 
+  for (const b of l.bookshelves) {
+    if (!b.pinnedTag) continue;
+    const hovered = scene.hoveredBookshelf === b.id;
+    const s = toScreen(scene, b.x + b.w / 2, b.y + b.h + 4);
+    tag(ctx, s.x, s.y, b.label, fs * 0.85, hovered ? C.yellow : "rgba(20,18,31,0.85)", hovered ? C.outline : C.yellow, "center");
+  }
+
   for (const a of scene.actors.values()) {
     const s = toScreen(scene, a.x, a.y + 16);
     const sel = scene.selectedEmployee === a.id;
@@ -71,6 +78,12 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
       const rt = st.runtime[hit.id];
       const s = toScreen(scene, hit.x + 18, hit.y - 60);
       hoverCard(ctx, s.x, s.y, [`${e.name} · ${ROLE_LABEL[e.role]}`, e.provider === "mock" ? "Mock (giả lập)" : e.model, rt?.note || (hit.leaving ? "Đang rời công ty" : "Đang rảnh")], fs);
+    } else {
+      const shelf = hitTestBookshelf(scene, m);
+      if (shelf) {
+        const s = toScreen(scene, shelf.x + shelf.w + 10, shelf.y);
+        hoverCard(ctx, s.x, s.y, ["Tủ sách · Hướng dẫn", "Bấm để đọc hướng dẫn sử dụng"], fs);
+      }
     }
   }
   tag(

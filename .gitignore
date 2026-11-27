@@ -5,3 +5,5 @@ data/
 workspace/
 .env
 backend/target-*/
+
+GEMINI.md

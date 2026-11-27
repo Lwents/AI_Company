@@ -4,6 +4,7 @@ import { ErrorBoundary } from "@/shared/ui/ErrorBoundary";
 import { DialogHost } from "@/shared/ui/Dialog";
 import { Office } from "@/features/office/Office";
 import { EmployeeDrawer } from "@/features/staff/EmployeeDrawer";
+import { GuideModal } from "@/features/guide/GuideModal";
 import { Header } from "./Header";
 import { ActivityTicker } from "./ActivityTicker";
 import { TABS } from "./tabs";
@@ -16,13 +17,16 @@ export function App() {
   const Panel = active.panel;
   // Phones show one thing at a time: the office or a panel (the "Văn phòng" tab only exists there).
   const [view, setView] = useState<"office" | "panel">("panel");
+  const [guideOpen, setGuideOpen] = useState(false);
 
   return (
     <div className="app">
       <Header />
       <main className={`view-${view}`}>
         <div className="left">
-          <ErrorBoundary label="Văn phòng">{state ? <Office /> : <div className="office loading">Đang kết nối backend…</div>}</ErrorBoundary>
+          <ErrorBoundary label="Văn phòng">
+            {state ? <Office onOpenGuide={() => setGuideOpen(true)} /> : <div className="office loading">Đang kết nối backend…</div>}
+          </ErrorBoundary>
           <ErrorBoundary label="Thông tin nhân viên">
             <EmployeeDrawer />
             <ActivityTicker />
@@ -59,6 +63,7 @@ export function App() {
           </div>
         </aside>
       </main>
+      {guideOpen && <GuideModal onClose={() => setGuideOpen(false)} />}
       <DialogHost />
     </div>
   );

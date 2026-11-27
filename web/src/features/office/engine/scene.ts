@@ -1,5 +1,5 @@
 import type { Employee } from "@/api/types";
-import type { P } from "../layout";
+import type { InteractiveBox, P } from "../layout";
 
 /**
  * Units:
@@ -67,6 +67,10 @@ export interface Scene {
   crown: string | null;
   selectedEmployee: string | null;
   selectedProject: string | null;
+  /** Clickable bookshelves from the current layout. */
+  bookshelves: InteractiveBox[];
+  /** Currently hovered bookshelf id, if any. */
+  hoveredBookshelf: string | null;
   /** Mouse position in world units, null when outside. */
   mouse: P | null;
   view: View;
@@ -82,6 +86,8 @@ export function createScene(): Scene {
     crown: null,
     selectedEmployee: null,
     selectedProject: null,
+    bookshelves: [],
+    hoveredBookshelf: null,
     mouse: null,
     view: { scale: 1, ox: 0, oy: 0, k: 1, fitK: 1 },
     cam: { manual: false, zoom: 2, cx: 0, cy: 0 },
