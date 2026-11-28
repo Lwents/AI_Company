@@ -65,6 +65,7 @@
 .term-host {
   flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
   padding: 8px 4px 4px 10px;
 }
 .term-host .xterm {
@@ -72,6 +73,12 @@
 }
 .term-host .xterm-viewport {
   background: var(--t-bg) !important;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.term-host .xterm-helper-textarea {
+  pointer-events: none;
 }
 .term-keys {
   display: flex;
@@ -100,7 +107,7 @@
   display: flex;
   gap: 6px;
   align-items: center;
-  padding: 4px 8px 8px;
+  padding: 4px 8px max(8px, env(safe-area-inset-bottom));
   flex: none;
 }
 .term-line .t-gt {

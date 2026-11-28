@@ -410,7 +410,7 @@ header b{font-size:15px}.grow{flex:1}
 button,.btn{background:#222;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;min-height:36px;padding:0 10px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 button:active{background:#333}.tabs{display:flex;gap:4px}.tabs button[aria-selected=true]{background:#2d3b55;border-color:#4a6496}
 main{flex:1;min-height:0;display:flex;flex-direction:column}
-#term{flex:1;min-height:0;padding:6px 4px 2px 8px}#term .xterm{height:100%}
+#term{flex:1;min-height:0;overflow:hidden;padding:6px 4px 2px 8px}#term .xterm{height:100%}#term .xterm-viewport{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}#term .xterm-helper-textarea{pointer-events:none}
 .keys{display:flex;gap:4px;padding:4px 8px;overflow-x:auto;border-top:1px solid var(--line);flex:none}
 .keys button{min-height:34px;white-space:nowrap}
 .line{display:flex;gap:6px;padding:4px 8px 8px;flex:none}.line input{flex:1;min-width:0;background:#141414;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;font-size:16px;padding:6px 8px}
@@ -423,8 +423,9 @@ pre{background:#111;border:1px solid var(--line);border-radius:6px;padding:8px;w
 <div class="tabs"><button id="t1" aria-selected="true">Claude CLI</button><button id="t2" aria-selected="false">Tình trạng</button></div>
 <a class="btn hide-s" href="/">Trang chính</a></header>
 <main><div id="tw" style="display:flex;flex-direction:column;flex:1;min-height:0"><div id="term"></div>
+<input id="imgf" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
 <div class="keys" id="keys"></div>
-<div class="line" id="line" hidden><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
+<div class="line" id="line" hidden><button id="imgb" type="button">Ảnh</button><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
 <section id="st"><div id="sum" class="dim">Đang kiểm tra…</div>
 <div class="row"><button id="re">🔄 Khởi động lại hệ thống chính</button><button id="rb">⏪ Quay về bản trước</button><a class="btn" href="/">← Trang chính</a></div>
 <p class="dim">Bản lỗi bị đẩy lên? Bấm "Quay về bản trước" để chạy lại ngay, rồi nhắn Khôi ở tab Claude CLI xem log và sửa.</p>
@@ -440,14 +441,22 @@ $("sum").innerHTML=`Dịch vụ: <b class="${s.active==="active"?"ok":"bad"}">${
 const lg=$("logs");const atEnd=lg.scrollTop+lg.clientHeight>=lg.scrollHeight-20||!lg.dataset.seen;lg.textContent=s.logs||"(không đọc được log)";if(atEnd){lg.scrollTop=lg.scrollHeight;lg.dataset.seen=1}$("commits").textContent=s.commits}catch(e){$("pill").textContent="?"}}
 $("re").onclick=async()=>{if(!confirm("Khởi động lại hệ thống chính?"))return;alert((await post("restart")).message);refresh()};
 $("rb").onclick=async()=>{if(!confirm("Quay về bản trước? (bản hiện tại được giữ lại thành .bad)"))return;alert((await post("rollback")).message);refresh()};
-const term=new Terminal({cursorBlink:true,fontFamily:'"Cascadia Mono",Consolas,"SF Mono",Menlo,ui-monospace,monospace',fontSize:innerWidth<600?12:14,lineHeight:1.15,scrollback:5000,theme:{background:"#0c0c0c",foreground:"#e6e6e6",cursor:"#e6e6e6"}});
-const fa=new FitAddon.FitAddon();term.loadAddon(fa);term.open($("term"));function fit(){try{fa.fit()}catch(e){}if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"resize",cols:term.cols,rows:term.rows}))}
+const term=new Terminal({cursorBlink:true,fontFamily:'"Cascadia Mono",Consolas,"SF Mono",Menlo,ui-monospace,monospace',fontSize:innerWidth<600?12:14,lineHeight:1.15,scrollback:5000,allowProposedApi:true,theme:{background:"#0c0c0c",foreground:"#e6e6e6",cursor:"#e6e6e6"}});
+const fa=new FitAddon.FitAddon();term.loadAddon(fa);term.open($("term"));
+if(touch&&term.textarea){term.textarea.setAttribute("readonly","readonly");term.textarea.setAttribute("inputmode","none");term.textarea.tabIndex=-1}
+term.parser.registerCsiHandler({final:"J"},p=>{if(p[0]===2)term.clear();return false});
+let sent="",fitT=null;
+function fit(){try{const atB=term.buffer.active.viewportY>=term.buffer.active.baseY-1;fa.fit();if(atB)term.scrollToBottom()}catch(e){}const sz=term.cols+"x"+term.rows;if(sz!==sent&&ws&&ws.readyState===1){sent=sz;ws.send(JSON.stringify({type:"resize",cols:term.cols,rows:term.rows}))}}
 let ws=null;function send(d){if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"input",data:d}))}
 function connect(){ws=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/rescue/pty?cols="+term.cols+"&rows="+term.rows);ws.binaryType="arraybuffer";
-ws.onopen=()=>{term.reset();fit()};ws.onmessage=m=>term.write(typeof m.data==="string"?m.data:new Uint8Array(m.data));ws.onclose=()=>{term.write("\r\n\x1b[2m[mất kết nối, đang nối lại…]\x1b[0m\r\n");setTimeout(connect,2000)}}
-term.onData(send);new ResizeObserver(fit).observe($("term"));fit();connect();
+ws.onopen=()=>{term.reset();sent="";fit()};ws.onmessage=m=>term.write(typeof m.data==="string"?m.data:new Uint8Array(m.data));ws.onclose=()=>{term.write("\r\n\x1b[2m[mất kết nối, đang nối lại…]\x1b[0m\r\n");setTimeout(connect,2000)}}
+term.onData(send);new ResizeObserver(()=>{clearTimeout(fitT);fitT=setTimeout(fit,120)}).observe($("term"));fit();connect();
+async function uploadImg(f){if(!f)return;try{const r=await fetch("api/upload",{method:"POST",headers:{"Content-Type":f.type||"application/octet-stream","X-Rescue":"1"},body:f});if(!r.ok){alert(await r.text()||"Không tải ảnh lên được");return}const d=await r.json();if(!d.path)return;if(touch){const i=$("li");i.value=i.value?i.value.trimEnd()+" "+d.path+" ":d.path+" ";i.focus()}else{send(d.path+" ");term.focus()}}catch(e){alert("Lỗi mạng khi gửi ảnh")}}
+$("imgf").onchange=e=>{const f=e.target.files&&e.target.files[0];e.target.value="";if(f)uploadImg(f)};
+window.addEventListener("paste",e=>{const it=e.clipboardData&&e.clipboardData.items;if(!it)return;for(const x of it){if(x.type.startsWith("image/")){const f=x.getAsFile();if(f){e.preventDefault();uploadImg(f);break}}}});
+if(!touch){const b=document.createElement("button");b.textContent="Gửi ảnh";b.onpointerdown=e=>e.preventDefault();b.onclick=()=>$("imgf").click();$("keys").appendChild(b)}
 [["Esc","\x1b"],["Tab","\t"],["⇧Tab","\x1b[Z"],["↑","\x1b[A"],["↓","\x1b[B"],["←","\x1b[D"],["→","\x1b[C"],["Ctrl+C","\x03"],["⏎","\r"]].forEach(([l,s])=>{const b=document.createElement("button");b.textContent=l;b.onpointerdown=e=>e.preventDefault();b.onclick=()=>{send(s);if(!touch)term.focus()};$("keys").appendChild(b)});
-if(touch){$("line").hidden=false;const go=()=>{const v=$("li").value;if(!v)return;send(v);setTimeout(()=>send("\r"),30);$("li").value=""};$("lb").onclick=go;$("li").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();go()}})}else term.focus();
+if(touch){$("line").hidden=false;$("imgb").onclick=()=>$("imgf").click();const go=()=>{const v=$("li").value;if(!v.trim())return;send(v);setTimeout(()=>send("\r"),30);$("li").value=""};$("lb").onclick=go;$("li").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();go()}});if(window.visualViewport){const sv=()=>{document.body.style.height=Math.round(visualViewport.height)+"px"};sv();visualViewport.addEventListener("resize",sv)}}else term.focus();
 if(location.hash==="#status")tab(2);refresh();setInterval(refresh,8000);
 </script></body></html>"""
 
@@ -614,6 +623,28 @@ class Handler(BaseHTTPRequestHandler):
         if p.startswith("/llm/v1/"):
             n = min(int(self.headers.get("Content-Length") or 0), 64_000_000)
             return llm_router.handle(self, p[len("/llm"):], self.rfile.read(n))
+        if p == "/api/upload":
+            if not self.authed() or self.headers.get("X-Rescue") != "1":
+                return self.j({"error": "Chưa đăng nhập"}, 401)
+            n = int(self.headers.get("Content-Length") or 0)
+            if n <= 0 or n > 20_000_000:
+                return self.j({"error": "Ảnh quá lớn (tối đa 20 MB)"}, 400)
+            raw = self.rfile.read(n)
+            ext = (
+                "png" if raw.startswith(b"\x89PNG\r\n\x1a\n")
+                else "jpg" if raw.startswith(b"\xff\xd8\xff")
+                else "gif" if raw.startswith((b"GIF87a", b"GIF89a"))
+                else "webp" if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+                else ""
+            )
+            if not ext:
+                return self.j({"error": "Chỉ nhận ảnh PNG, JPG, GIF hoặc WebP"}, 400)
+            updir = os.path.join(DATA, "uploads", "chat")
+            os.makedirs(updir, exist_ok=True)
+            path = os.path.join(updir, f"img-{secrets.token_hex(6)}.{ext}")
+            with open(path, "wb") as f:
+                f.write(raw)
+            return self.j({"path": path, "size": len(raw)})
         n = min(int(self.headers.get("Content-Length") or 0), 200_000)
         body = self.rfile.read(n).decode("utf-8", "replace")
         if p == "/login":

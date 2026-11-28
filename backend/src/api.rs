@@ -52,6 +52,7 @@ pub fn router(store: S) -> Router {
         .route("/api/screen/{id}", get(employee_screen))
         .route("/api/maintainer", get(maintainer_info))
         .route("/api/maintainer/pty", get(maintainer_pty))
+        .route("/api/maintainer/upload", post(maintainer_upload).layer(axum::extract::DefaultBodyLimit::max(20 * 1024 * 1024)))
         .route("/api/screen/{id}/input", post(screen_input))
         .route("/preview/{id}/{*path}", get(preview))
         .route("/preview/{id}/", get(preview_index))
@@ -611,6 +612,25 @@ async fn maintainer_pty(State(store): State<S>, Query(q): Query<PtyQuery>, up: W
 
 async fn maintainer_info(State(store): State<S>) -> ApiResult {
     Ok(Json(crate::maintainer::info(&store).await))
+}
+
+async fn maintainer_upload(State(store): State<S>, body: axum::body::Bytes) -> ApiResult {
+    let ext = if body.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if body.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
+        "gif"
+    } else if body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP" {
+        "webp"
+    } else {
+        return Err(bad("Chỉ nhận ảnh PNG, JPG, GIF hoặc WebP"));
+    };
+    let dir = store.data_dir.join("uploads").join("chat");
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| bad(e.to_string()))?;
+    let path = dir.join(format!("img-{}.{ext}", new_id()));
+    tokio::fs::write(&path, &body).await.map_err(|e| bad(e.to_string()))?;
+    Ok(Json(json!({ "path": path.to_string_lossy(), "size": body.len() })))
 }
 
 async fn create_employee(State(store): State<S>, Json(b): Json<NewEmployee>) -> ApiResult {

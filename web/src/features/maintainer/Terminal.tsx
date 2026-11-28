@@ -33,13 +33,18 @@ export function Terminal({
 }) {
   const { state } = useStore();
   const e = state?.employees.find((x) => x.id === empId);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const sendRef = useRef<(data: string) => void>(() => {});
   const termRef = useRef<XTerm | null>(null);
   const [status, setStatus] = useState<"connecting" | "on" | "off">(
     "connecting",
   );
   const [line, setLine] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
   const touch =
     typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
@@ -66,9 +71,18 @@ export function Terminal({
     term.loadAddon(fit);
     term.open(host);
     termRef.current = term;
+    // Prevent xterm's hidden textarea from stealing focus on mobile touch and jumping the scroll position.
+    if (touch && term.textarea) {
+      term.textarea.setAttribute("readonly", "readonly");
+      term.textarea.setAttribute("inputmode", "none");
+      term.textarea.tabIndex = -1;
+    }
     const doFit = () => {
       try {
+        const atBottom =
+          term.buffer.active.viewportY >= term.buffer.active.baseY - 1;
         fit.fit();
+        if (atBottom) term.scrollToBottom();
       } catch {
         /* not laid out yet */
       }
@@ -87,6 +101,7 @@ export function Terminal({
     // Where the CLI session lives: the rescue service on the server (it survives deploys), else this app.
     let ptyPath = "/api/maintainer/pty";
     let retry: number | undefined;
+    let fitTimer: number | undefined;
     const send = (data: string) => {
       if (ws?.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: "input", data }));
@@ -133,14 +148,35 @@ export function Terminal({
       });
     const onData = term.onData(send);
     const ro = new ResizeObserver(() => {
-      doFit();
-      sendSize();
+      window.clearTimeout(fitTimer);
+      fitTimer = window.setTimeout(() => {
+        doFit();
+        sendSize();
+      }, 120);
     });
     ro.observe(host);
+    // Keep the mobile overlay locked to the visual viewport so opening the keyboard doesn't push it up.
+    const vv = !embedded && touch ? window.visualViewport : null;
+    const syncViewport = () => {
+      const box = dialogRef.current;
+      if (!vv || !box) return;
+      box.style.height = `${Math.round(vv.height)}px`;
+      box.style.top = `${Math.round(vv.offsetTop)}px`;
+    };
+    if (vv) {
+      syncViewport();
+      vv.addEventListener("resize", syncViewport);
+      vv.addEventListener("scroll", syncViewport);
+    }
     if (!touch) term.focus();
     return () => {
       closed = true;
       window.clearTimeout(retry);
+      window.clearTimeout(fitTimer);
+      if (vv) {
+        vv.removeEventListener("resize", syncViewport);
+        vv.removeEventListener("scroll", syncViewport);
+      }
       ro.disconnect();
       onData.dispose();
       eraseHook.dispose();
@@ -148,32 +184,91 @@ export function Terminal({
       term.dispose();
       termRef.current = null;
     };
-  }, [touch]);
+  }, [touch, embedded]);
 
   if (!e) return null;
+  const uploadImage = async (file: File) => {
+    setUploadErr("");
+    setUploading(true);
+    try {
+      const res = await fetch("/api/maintainer/upload", {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        setUploadErr(msg || "Không tải ảnh lên được");
+        return;
+      }
+      const data = (await res.json()) as { path?: string };
+      if (!data.path) return;
+      if (touch) {
+        setLine((prev) => (prev ? `${prev.trimEnd()} ${data.path} ` : `${data.path} `));
+        inputRef.current?.focus();
+      } else {
+        sendRef.current(`${data.path} `);
+        termRef.current?.focus();
+      }
+    } catch {
+      setUploadErr("Lỗi mạng khi gửi ảnh");
+    } finally {
+      setUploading(false);
+    }
+  };
   const sendLine = () => {
-    if (!line) return;
+    if (!line.trim()) return;
     sendRef.current(line);
     window.setTimeout(() => sendRef.current("\r"), 30);
     setLine("");
   };
   return (
     <div
+      ref={dialogRef}
       className={`office-chat term${embedded ? " embedded" : ""}`}
       role="dialog"
       aria-label={`Claude CLI của ${e.name}`}
+      onPaste={(ev) => {
+        const items = ev.clipboardData?.items;
+        if (!items) return;
+        for (const item of items) {
+          if (item.type.startsWith("image/")) {
+            const f = item.getAsFile();
+            if (f) {
+              ev.preventDefault();
+              void uploadImage(f);
+              break;
+            }
+          }
+        }
+      }}
     >
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        hidden
+        onChange={(ev) => {
+          const f = ev.target.files?.[0];
+          ev.target.value = "";
+          if (f) void uploadImage(f);
+        }}
+      />
       <div className="term-bar">
         <span className={`term-led ${status}`} />
         <b>{e.name}</b>
         <span className="dim">· Bảo trì hệ thống · Claude CLI</span>
         <span className="grow" />
         <span className="dim small">
-          {status === "on"
-            ? "đã kết nối"
-            : status === "connecting"
-              ? "đang nối…"
-              : "mất kết nối, đang nối lại…"}
+          {uploadErr
+            ? uploadErr
+            : uploading
+              ? "đang gửi ảnh…"
+              : status === "on"
+                ? "đã kết nối"
+                : status === "connecting"
+                  ? "đang nối…"
+                  : "mất kết nối, đang nối lại…"}
         </span>
         <button
           className="term-close"
@@ -187,9 +282,21 @@ export function Terminal({
       <div
         className="term-host"
         ref={hostRef}
-        onClick={() => termRef.current?.focus()}
+        onClick={() => {
+          if (!touch) termRef.current?.focus();
+        }}
       />
       <div className="term-keys">
+        {!touch && (
+          <button
+            disabled={uploading}
+            onPointerDown={(ev) => ev.preventDefault()}
+            onClick={() => fileRef.current?.click()}
+            title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
+          >
+            {uploading ? "Đang tải…" : "Gửi ảnh"}
+          </button>
+        )}
         {KEYS.map(([label, seq]) => (
           <button
             key={label}
@@ -205,8 +312,18 @@ export function Terminal({
       </div>
       {touch && (
         <div className="term-line">
-          <span className="t-gt">&gt;</span>
+          <button
+            type="button"
+            className="t-img"
+            disabled={uploading}
+            onClick={() => fileRef.current?.click()}
+            aria-label="Gửi ảnh"
+            title="Chọn ảnh gửi vào đoạn chat"
+          >
+            {uploading ? "…" : "Ảnh"}
+          </button>
           <input
+            ref={inputRef}
             value={line}
             placeholder="Gõ tin nhắn (có dấu) rồi Gửi"
             onChange={(ev) => setLine(ev.target.value)}
