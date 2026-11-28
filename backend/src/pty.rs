@@ -64,6 +64,9 @@ fn session(store: &S, cols: u16, rows: u16) -> Result<Arc<Session>, String> {
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // A real colour terminal, whatever the server was started with (some shells export NO_COLOR=1).
+    cmd.env_remove("NO_COLOR");
+    cmd.env("FORCE_COLOR", "3");
     let child = pair.slave.spawn_command(cmd).map_err(|e| format!("Không chạy được Claude CLI: {e}"))?;
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
