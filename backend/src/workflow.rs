@@ -419,7 +419,12 @@ pub(crate) async fn minutes(store: &S, p: &Project, topic: &str, source: &str, c
 async fn phase_plan(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
     let ceo = first(store, &[Role::Ceo]).ok_or("Công ty cần ít nhất 1 CEO đang làm việc")?;
     let all = everyone(store);
-    store.post_message(Some(&p.id), "chairman", &ceo.id, if p.feedback.is_empty() { p.request.clone() } else { p.feedback.last().cloned().unwrap_or_default() }, "chat");
+    // The project brief handed to the CEO (a hand-over, not something the chairman just typed: no reply expected).
+    let brief = match p.feedback.last() {
+        Some(fb) => format!("📋 Yêu cầu sửa đổi (vòng {}): {fb}", p.feedback.len()),
+        None => format!("📋 Yêu cầu dự án: {}", p.request),
+    };
+    store.post_message(Some(&p.id), "chairman", &ceo.id, brief, "handoff");
     meeting(store, &p.id, all.clone(), "Họp khởi động", true);
     if let Err(e) = consult_tech(store, p, cancel).await {
         meeting(store, &p.id, all, "", false);

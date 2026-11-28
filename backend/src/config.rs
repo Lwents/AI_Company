@@ -99,6 +99,8 @@ pub fn known_price(model: &str) -> (f64, f64) {
         m if m.contains("gemini-4-neon") => (3.0, 15.0),
         m if m.contains("gemini-4-carbon") || m.contains("gemini-4-argon") => (2.0, 10.0),
         m if m.contains("gemini-4-hydrogen") => (1.5, 7.5),
+        // DeepSeek list price (chat model), also through proxies such as Xoay "opencode/deepseek-…": not free.
+        m if m.contains("deepseek") => (0.28, 0.42),
         _ => (0.0, 0.0),
     }
 }
