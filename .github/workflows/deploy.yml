@@ -57,7 +57,7 @@ jobs:
           cp mcp.json pkg/
           tar -czf release.tgz -C pkg .
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: release
           path: |
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: production
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           name: release
 
