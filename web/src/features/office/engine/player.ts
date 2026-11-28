@@ -31,6 +31,14 @@ export function walkToEmployee(scene: Scene, l: Layout, id: string) {
   scene.talkTries = 0;
 }
 
+/** Rest mode: back to the chair at the chairman's desk (and stay there). */
+export function goSit(scene: Scene, l: Layout) {
+  const pl = ensurePlayer(scene, l);
+  scene.talkTarget = null;
+  if (Math.hypot(pl.x - l.chairman.x, pl.y - l.chairman.y) < 3) return;
+  pl.path = route(l, pl, l.chairman);
+}
+
 /** Click / tap on the floor: walk there when it is a place one can stand. */
 export function walkToPoint(scene: Scene, l: Layout, to: P) {
   if (!walkable(l, to.x, to.y)) return false;

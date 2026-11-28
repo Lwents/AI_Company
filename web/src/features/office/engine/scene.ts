@@ -104,6 +104,8 @@ export interface Scene {
   arrived: string | null;
   /** Layout of the current frame (for helpers that need it outside the frame loop). */
   playerLayout: import("../layout").Layout | null;
+  /** Rest mode: the chairman stays seated at their desk; clicking someone opens the interaction at once. */
+  resting: boolean;
 }
 
 export function createScene(): Scene {
@@ -128,5 +130,6 @@ export function createScene(): Scene {
     talkTarget: null,
     talkTries: 0,
     arrived: null,
+    resting: false,
   };
 }

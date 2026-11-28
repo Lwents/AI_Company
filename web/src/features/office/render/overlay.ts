@@ -108,9 +108,13 @@ export function compose(ctx: CanvasRenderingContext2D, off: HTMLCanvasElement, s
     ctx,
     8,
     ctx.canvas.height - fs - 8,
-    TOUCH
-      ? "Chạm nhân viên: Chủ tịch đi tới để tương tác · Chạm sàn: đi tới đó · Chụm 2 ngón: zoom"
-      : "Bấm nhân viên: Chủ tịch đi tới để tương tác · Bấm sàn: đi tới đó · Lăn chuột: zoom",
+    scene.resting
+      ? TOUCH
+        ? "🪑 Đang ngồi nghỉ · Chạm nhân viên: tương tác ngay · Chụm 2 ngón: zoom"
+        : "🪑 Đang ngồi nghỉ · Bấm nhân viên: tương tác ngay · Lăn chuột: zoom"
+      : TOUCH
+        ? "Chạm nhân viên: Chủ tịch đi tới để tương tác · Chạm sàn: đi tới đó · Chụm 2 ngón: zoom"
+        : "Bấm nhân viên: Chủ tịch đi tới để tương tác · Bấm sàn: đi tới đó · Lăn chuột: zoom",
     fs * 0.85,
     "rgba(20,18,31,0.7)",
     C.silver,

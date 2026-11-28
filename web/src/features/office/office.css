@@ -151,3 +151,12 @@
     right: 12px;
   }
 }
+
+/* Rest mode on: the chair button stays highlighted. */
+.zoom-ctl button.on {
+  background: var(--amber);
+  color: #1a1c2c;
+}
+.zoom-ctl button.on svg {
+  fill: #1a1c2c;
+}

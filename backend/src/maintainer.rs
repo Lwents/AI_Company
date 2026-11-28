@@ -224,8 +224,9 @@ pub fn cli_env(name: &str) -> Vec<(String, Option<String>)> {
             set(&format!("ANTHROPIC_DEFAULT_{slot}_MODEL_DESCRIPTION"), note.to_string());
         }
     }
-    if let Some(m) = &small {
-        set("ANTHROPIC_SMALL_FAST_MODEL", m.clone());
+    // Background chores of the CLI (titles, summaries): a model that always answers quickly.
+    if let Some(m) = pick("AICO_CLAUDE_FAST_MODEL").or_else(|| small.clone()) {
+        set("ANTHROPIC_SMALL_FAST_MODEL", m);
     }
     set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1".into());
     // The server CPU lacks SSE4.2; newer (native) Claude CLI builds won't run there, so never auto-update.

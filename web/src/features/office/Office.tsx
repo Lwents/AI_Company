@@ -6,7 +6,7 @@ import { createScene, p } from "./engine/scene";
 import { applyLiveEvent, tick } from "./engine/simulation";
 import { devicePoint, deviceToWorld, dragTo, fitView, hitTest, hitTestBookshelf, resetCamera, startDrag, wheelFactor, zoomBy, zoomStep } from "./engine/camera";
 import { drawWorld } from "./render/world";
-import { movePlayer, walkToEmployee, walkToPoint } from "./engine/player";
+import { goSit, movePlayer, walkToEmployee, walkToPoint } from "./engine/player";
 import { ChatPopup, InteractMenu, MENU, type MenuAction } from "./Interact";
 import { compose } from "./render/overlay";
 import "./office.css";
@@ -25,6 +25,14 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
   // Interaction with the employee next to the chairman: a menu, then an in-office chat.
   const [menu, setMenu] = useState<{ emp: string; index: number } | null>(null);
   const [chatWith, setChatWith] = useState<string | null>(null);
+  // Rest mode (remembered on this device): the chairman sits at the desk, clicks open interactions directly.
+  const [resting, setResting] = useState(() => {
+    try {
+      return localStorage.getItem("aico.resting") === "1";
+    } catch {
+      return false;
+    }
+  });
   const menuRef = useRef(menu);
   menuRef.current = menu;
   scene.frozen = !!menu || !!chatWith || !!watching;
@@ -41,6 +49,15 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
     setMenu({ ...m, index: (m.index + (dir === "down" ? 1 : MENU.length - 1)) % MENU.length });
   };
   const openMenuRef = useRef((id: string) => setMenu({ emp: id, index: 0 }));
+  useEffect(() => {
+    scene.resting = resting;
+    try {
+      localStorage.setItem("aico.resting", resting ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+    if (resting && scene.playerLayout) goSit(scene, scene.playerLayout);
+  }, [resting, scene]);
   const keysRef = useRef({ navMenu, pick });
   keysRef.current = { navMenu, pick };
 
@@ -202,6 +219,11 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
           const hit = hitTest(scene, wp);
           const l = scene.playerLayout;
           if (hit && l) {
+            if (scene.resting) {
+              // Resting: no walking, the interaction menu opens right away.
+              openMenuRef.current(hit.id);
+              return;
+            }
             // The chairman walks over to them, then the interaction menu opens.
             setMenu(null);
             walkToEmployee(scene, l, hit.id);
@@ -212,7 +234,7 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
             onOpenGuide?.();
             return;
           }
-          if (scene.playerLayout && !scene.frozen) walkToPoint(scene, scene.playerLayout, wp);
+          if (scene.playerLayout && !scene.frozen && !scene.resting) walkToPoint(scene, scene.playerLayout, wp);
           setSelectedEmployee(null);
         }}
         onPointerCancel={(ev) => {
@@ -231,6 +253,17 @@ export function Office({ onOpenGuide }: { onOpenGuide?: () => void }) {
       {menu && <InteractMenu empId={menu.emp} index={menu.index} onPick={(a) => pick(a, menu.emp)} />}
       {chatWith && <ChatPopup empId={chatWith} onClose={() => setChatWith(null)} />}
       <div className="zoom-ctl">
+        <button
+          className={resting ? "on" : undefined}
+          aria-pressed={resting}
+          title={resting ? "Đang ngồi nghỉ — bấm để đứng dậy đi lại" : "Ngồi nghỉ: ngồi tại bàn, bấm nhân viên là tương tác ngay"}
+          aria-label="Ngồi nghỉ"
+          onClick={() => setResting((r) => !r)}
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M2 0h2v5h4v2H7v3H5V7H3v3H1V5h1zM6 3h3v1H6z" />
+          </svg>
+        </button>
         <button title="Phóng to" aria-label="Phóng to" onClick={() => zoomStep(scene, canvas(), true)}>
           <svg viewBox="0 0 10 10" aria-hidden="true">
             <path d="M4 1h2v3h3v2H6v3H4V6H1V4h3z" />

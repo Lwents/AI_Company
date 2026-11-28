@@ -15,6 +15,8 @@ the rescue page down with it. Env from /etc/ai-company/env. Listens on 127.0.0.1
 nginx / Cloudflare forward /rescue/ to it.
 """
 import base64
+import glob
+import signal
 import fcntl
 import hashlib
 import hmac
@@ -32,6 +34,8 @@ import urllib.request
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import llm_router
+
 try:
     from argon2 import PasswordHasher
 except ImportError:  # pragma: no cover
@@ -46,6 +50,8 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 SECRET = secrets.token_bytes(32)  # this page's own sessions end when the rescue service restarts
 SESSION_HOURS = 12
 BACKLOG = 256 * 1024
+# The CLI (about 300 MB) is only kept while used: closed after this many idle minutes, resumed (--continue) on demand.
+IDLE_MIN = float(os.environ.get("RESCUE_CLI_IDLE_MIN", "15"))
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
@@ -129,6 +135,7 @@ def status():
         "binary": mtime(os.path.join(APP, "ai-company")),
         "prev": mtime(os.path.join(APP, "ai-company.prev")),
         "cli": PTY.alive(),
+        "cliIdleMin": IDLE_MIN,
     }
 
 
@@ -196,9 +203,9 @@ def cli_env():
         "GIT_AUTHOR_EMAIL": "maintainer@ai-company.local",
         "GIT_COMMITTER_EMAIL": "maintainer@ai-company.local",
     }
-    if os.environ.get("AICO_CLAUDE_BASE_URL"):
-        env["ANTHROPIC_BASE_URL"] = os.environ["AICO_CLAUDE_BASE_URL"]
-        env["ANTHROPIC_AUTH_TOKEN"] = key
+    # Through our own router: DeepSeek ("opencode/...") goes to Xoay, everything else to 9router.
+    env["ANTHROPIC_BASE_URL"] = os.environ.get("AICO_CLAUDE_ROUTER_URL", f"http://127.0.0.1:{PORT}/llm")
+    env["ANTHROPIC_AUTH_TOKEN"] = key
     main = os.environ.get("AICO_CLAUDE_MODEL", "").strip()
     mid = os.environ.get("AICO_CLAUDE_MID_MODEL", "").strip() or main
     small = os.environ.get("AICO_CLAUDE_SMALL_MODEL", "").strip() or mid
@@ -213,8 +220,9 @@ def cli_env():
             env[f"ANTHROPIC_DEFAULT_{slot}_MODEL"] = model
             env[f"ANTHROPIC_DEFAULT_{slot}_MODEL_NAME"] = model_name(model)
             env[f"ANTHROPIC_DEFAULT_{slot}_MODEL_DESCRIPTION"] = note
-    if small:
-        env["ANTHROPIC_SMALL_FAST_MODEL"] = small
+    fast = os.environ.get("AICO_CLAUDE_FAST_MODEL", "").strip() or small
+    if fast:
+        env["ANTHROPIC_SMALL_FAST_MODEL"] = fast  # background chores: a model that always answers quickly
     return env
 
 
@@ -227,6 +235,37 @@ class PtySession:
         self.master = None
         self.backlog = bytearray()
         self.clients = set()
+        self.last = time.time()
+        self.idle_closed = False
+        threading.Thread(target=self._reaper, daemon=True).start()
+
+    def _reaper(self):
+        """Closes the CLI after IDLE_MIN minutes with nobody attached and nothing happening."""
+        while True:
+            time.sleep(60)
+            with self.lock:
+                idle = self.alive() and not self.clients and time.time() - self.last > IDLE_MIN * 60
+            if idle:
+                self.idle_closed = True
+                self.stop()
+
+    def stop(self):
+        p = self.proc
+        if p is None or p.poll() is not None:
+            return
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+            p.wait(timeout=8)
+        except Exception:  # noqa: BLE001
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    @staticmethod
+    def has_history():
+        home = os.environ.get("AICO_CLAUDE_HOME", "/home/aico")
+        return bool(glob.glob(os.path.join(home, ".claude", "projects", SRC.replace("/", "-"), "*.jsonl")))
 
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
@@ -238,6 +277,9 @@ class PtySession:
             master, slave = os.openpty()
             self._size(master, cols, rows)
             args = [os.environ.get("AICO_CLAUDE_BIN", "claude"), "--dangerously-skip-permissions", "--append-system-prompt", rules()]
+            resumed = self.has_history()
+            if resumed:
+                args.append("--continue")  # pick the last conversation back up
             if os.environ.get("AICO_CLAUDE_MODEL"):
                 args += ["--model", os.environ["AICO_CLAUDE_MODEL"]]
 
@@ -249,6 +291,10 @@ class PtySession:
             os.close(slave)
             self.master = master
             self.backlog = bytearray()
+            self.last = time.time()
+            if self.idle_closed and resumed:
+                self.backlog += "\x1b[2m[Phiên trước đã tự tắt khi không dùng để tiết kiệm RAM — mở lại và tiếp tục cuộc trò chuyện cũ…]\x1b[0m\r\n".encode()
+            self.idle_closed = False
             threading.Thread(target=self._read, args=(master,), daemon=True).start()
 
     @staticmethod
@@ -271,12 +317,17 @@ class PtySession:
             if not data:
                 break
             with self.lock:
+                self.last = time.time()
                 self.backlog += data
                 if len(self.backlog) > BACKLOG:
                     del self.backlog[: len(self.backlog) - BACKLOG]
                 for q in list(self.clients):
                     q.put(data)
-        note = "\r\n\x1b[2m[Claude CLI đã thoát — gõ phím bất kỳ để mở lại]\x1b[0m\r\n".encode()
+        note = (
+            "\r\n\x1b[2m[Claude CLI đã tự tắt vì không ai dùng (tiết kiệm RAM) — gõ phím bất kỳ để mở lại, cuộc trò chuyện được giữ nguyên]\x1b[0m\r\n"
+            if self.idle_closed
+            else "\r\n\x1b[2m[Claude CLI đã thoát — gõ phím bất kỳ để mở lại]\x1b[0m\r\n"
+        ).encode()
         with self.lock:
             for q in list(self.clients):
                 q.put(note)
@@ -286,6 +337,7 @@ class PtySession:
             pass
 
     def write(self, text):
+        self.last = time.time()
         if self.alive() and self.master is not None:
             try:
                 os.write(self.master, text.encode())
@@ -302,6 +354,7 @@ class PtySession:
     def detach(self, q):
         with self.lock:
             self.clients.discard(q)
+            self.last = time.time()
 
 
 PTY = PtySession()
@@ -451,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path_only()
+        if p.startswith("/llm/v1/"):
+            return llm_router.handle(self, p[len("/llm"):], b"")
         if p == "":
             return self.send(302, "", headers={"Location": "/rescue/"})
         if p.startswith("/static/"):
@@ -550,6 +605,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path_only()
+        if p.startswith("/llm/v1/"):
+            n = min(int(self.headers.get("Content-Length") or 0), 64_000_000)
+            return llm_router.handle(self, p[len("/llm"):], self.rfile.read(n))
         n = min(int(self.headers.get("Content-Length") or 0), 200_000)
         body = self.rfile.read(n).decode("utf-8", "replace")
         if p == "/login":
