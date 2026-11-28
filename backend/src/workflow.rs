@@ -4,6 +4,15 @@
 //! → Build (Dev ⇄ Reviewer ⇄ Tester, PM standup) → Release (DevOps; bugs go back to Build)
 //! → Report (CEO) → Chairman approval. The Secretary writes minutes of the kickoff and closing meetings.
 //! At kickoff the department heads discuss the CEO's draft for `settings.meeting_rounds` rounds before the CEO decides.
+//!
+//! The process scales with the project's size (`Project.mode`), like a real company:
+//! - "fast" (S): one engineer builds it, an automatic browser check, a Tester tries it.
+//! - "standard" (M): ~7 people; CEO plan without a vote, short requirements, 2 design options, short
+//!   architecture, Dev ⇄ Reviewer ⇄ Tester per ticket, ONE final QA, the browser gate, the report.
+//! - "full" (L): everything above plus the debate and vote, sprint planning, constitution, data design,
+//!   consistency analysis, design / security / DevOps reviews, specification, minutes and retrospective.
+//! A change request never restarts the process: the PM analyses its impact on the existing backlog and
+//! only the affected steps run again (design and / or architecture, then build).
 use crate::agent::{self, Job};
 use crate::store::{now_ms, S};
 use crate::tools::Outcome;
@@ -46,13 +55,22 @@ tokio::task_local! {
 /// People of a role who work on the current project: its team when it has one, else everyone.
 pub(crate) fn team_staff(store: &S, role: Role) -> Vec<Employee> {
     let all = store.staff(role);
-    let team = CURRENT_PROJECT.try_with(|p| p.clone()).ok().and_then(|pid| store.project(&pid)).map(|p| p.team).unwrap_or_default();
+    let (team, small) = CURRENT_PROJECT
+        .try_with(|p| p.clone())
+        .ok()
+        .and_then(|pid| store.project(&pid))
+        .map(|p| (p.team.clone(), is_small(&p)))
+        .unwrap_or_default();
     if team.is_empty() {
         return all;
     }
     let mine: Vec<Employee> = all.iter().filter(|e| team.contains(&e.id)).cloned().collect();
-    // Someone hired for a role the team lacks still gets the work.
-    if mine.is_empty() { all } else { mine }
+    if !mine.is_empty() {
+        return mine;
+    }
+    // A small project's team is deliberate: a role it leaves out is skipped, not borrowed from the company.
+    // On a full project, someone hired for a role the team lacks still gets the work.
+    if small && role != Role::Dev { vec![] } else { all }
 }
 
 pub(crate) fn first(store: &S, roles: &[Role]) -> Option<Employee> {
@@ -62,6 +80,13 @@ pub(crate) fn first(store: &S, roles: &[Role]) -> Option<Employee> {
 /// Picks a team for a project: per role the people least busy with other running projects
 /// (one per role; developers: every free one, so they can code in parallel).
 pub fn assign_team(store: &S, pid: &str) -> Vec<String> {
+    let mode = store.project(pid).map(|p| p.mode).unwrap_or_default();
+    // Who works on a project of this size (None = every role).
+    let (keep, max_devs): (Option<&[Role]>, usize) = match mode.as_str() {
+        "fast" => (Some(&[Role::Ceo, Role::Architect, Role::Dev, Role::Tester]), 1),
+        "full" => (None, usize::MAX),
+        _ => (Some(&[Role::Ceo, Role::Pm, Role::Designer, Role::Architect, Role::Dev, Role::Reviewer, Role::Tester]), 2),
+    };
     let running: Vec<String> = store.cancels.lock().unwrap().keys().filter(|k| k.as_str() != pid).cloned().collect();
     let (emps, load) = store.with(|s| {
         let mut load: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -81,10 +106,13 @@ pub fn assign_team(store: &S, pid: &str) -> Vec<String> {
         }
     }
     for role in roles {
+        if keep.is_some_and(|k| !k.contains(&role)) {
+            continue;
+        }
         let people: Vec<&Employee> = emps.iter().filter(|e| e.role == role).collect();
         let min = people.iter().map(|e| load.get(&e.id).copied().unwrap_or(0)).min().unwrap_or(0);
         let free: Vec<&Employee> = people.into_iter().filter(|e| load.get(&e.id).copied().unwrap_or(0) == min).collect();
-        let take = if role == Role::Dev { free.len() } else { 1 };
+        let take = if role == Role::Dev { free.len().min(max_devs) } else { 1 };
         team.extend(free.into_iter().take(take).map(|e| e.id.clone()));
     }
     store.update_project(pid, |p| p.team = team.clone());
@@ -93,6 +121,12 @@ pub fn assign_team(store: &S, pid: &str) -> Vec<String> {
 
 fn everyone(store: &S) -> Vec<String> {
     store.with(|s| s.employees.iter().filter(|e| e.enabled && e.role != Role::Maintainer).map(|e| e.id.clone()).collect())
+}
+
+/// Who attends the project's meetings: its team (everyone when it has none).
+fn members(store: &S, p: &Project) -> Vec<String> {
+    let team = store.project(&p.id).map(|x| x.team).unwrap_or_default();
+    if team.is_empty() { everyone(store) } else { team }
 }
 
 pub(crate) fn summary_of(o: &Outcome) -> String {
@@ -212,6 +246,16 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
                 if decide_mode(store, &p) == "fast" {
                     fast_plan(store, &p)?;
                     Phase::Build
+                } else if is_revision(store, &p) {
+                    // A change request: impact analysis on the existing backlog, then only the affected steps.
+                    let scope = phase_change(store, &p, cancel).await?;
+                    if scope.contains("design") {
+                        Phase::Design
+                    } else if scope.contains("arch") {
+                        Phase::Architecture
+                    } else {
+                        Phase::Build
+                    }
                 } else {
                     phase_plan(store, &p, cancel).await?;
                     Phase::Requirements
@@ -219,7 +263,8 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::Requirements => {
                 phase_requirements(store, &p, cancel).await?;
-                Phase::Planning
+                // The PM's sprint plan is for big projects; on a medium one the requirements order the tickets.
+                if is_standard(&p) { Phase::Design } else { Phase::Planning }
             }
             Phase::Planning => {
                 phase_planning(store, &p, cancel).await?;
@@ -227,7 +272,8 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::Design => {
                 phase_design(store, &p, cancel).await?;
-                Phase::Architecture
+                // A change that only touches the look goes straight back to coding.
+                if !p.change_scope.is_empty() && !p.change_scope.contains("arch") { Phase::Build } else { Phase::Architecture }
             }
             Phase::Architecture => {
                 phase_architecture(store, &p, cancel).await?;
@@ -239,7 +285,13 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::Release => {
                 // Fast lane: no design / security / QA rounds — the browser check before hand-over still applies.
-                let again = if is_fast(&p) { ship_gate(store, &p, cancel).await? } else { phase_release(store, &p, cancel).await? };
+                let again = if is_fast(&p) {
+                    ship_gate(store, &p, cancel).await?
+                } else if is_standard(&p) {
+                    release_standard(store, &p, cancel).await?
+                } else {
+                    phase_release(store, &p, cancel).await?
+                };
                 if again {
                     Phase::Build
                 } else {
@@ -248,7 +300,7 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::Report => {
                 phase_report(store, &p, cancel).await?;
-                if !is_fast(&p) {
+                if !is_small(&p) {
                     retrospective(store, &p, cancel).await;
                 }
                 crate::gitflow::commit(store, pid, &format!("{}: bàn giao{}", p.name, if p.feedback.is_empty() { String::new() } else { format!(" sau yêu cầu sửa #{}", p.feedback.len()) })).await;
@@ -428,7 +480,7 @@ pub(crate) async fn minutes(store: &S, p: &Project, topic: &str, source: &str, c
 /// (opinions, then rebuttals), and only then the CEO decides and finalises the plan.
 async fn phase_plan(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
     let ceo = first(store, &[Role::Ceo]).ok_or("Công ty cần ít nhất 1 CEO đang làm việc")?;
-    let all = everyone(store);
+    let all = members(store, p);
     // The project brief handed to the CEO (a hand-over, not something the chairman just typed: no reply expected).
     let brief = match p.feedback.last() {
         Some(fb) => format!("📋 Yêu cầu sửa đổi (vòng {}): {fb}", p.feedback.len()),
@@ -451,6 +503,15 @@ async fn phase_plan(store: &S, p: &Project, cancel: &CancellationToken) -> Resul
             return Err(e);
         }
     };
+    if is_standard(p) {
+        // Medium project: the CEO's plan is the plan (no debate, vote, constitution or minutes).
+        meeting(store, &p.id, all, "", false);
+        let next = first(store, &[Role::Ba, Role::Pm]).unwrap_or(ceo.clone());
+        if next.id != ceo.id {
+            handoff(store, &p.id, &ceo.id, &next.id, format!("Kế hoạch đã chốt (docs/PLAN.md). {}", summary_of(&r.outcome)));
+        }
+        return Ok(());
+    }
     if let Err(e) = write_constitution(store, p, &ceo, cancel).await {
         meeting(store, &p.id, all, "", false);
         return Err(e);
@@ -488,7 +549,8 @@ fn discussion_panel(store: &S) -> Vec<Employee> {
 }
 
 async fn kickoff(store: &S, p: &Project, ceo: &Employee, all: &[String], cancel: &CancellationToken) -> Result<agent::JobResult, String> {
-    let rounds = store.with(|s| s.settings.meeting_rounds).min(5);
+    // The debate and vote are for big projects only.
+    let rounds = if is_standard(p) { 0 } else { store.with(|s| s.settings.meeting_rounds).min(5) };
     let panel = if rounds == 0 { vec![] } else { discussion_panel(store) };
     let dir = if p.feedback.is_empty() { "docs/meetings/kickoff".to_string() } else { format!("docs/meetings/kickoff-sua-{}", p.feedback.len()) };
     // Resumable: whatever is already written to disk (opinions, ballot, votes) is not redone after a restart.
@@ -758,9 +820,13 @@ async fn phase_requirements(store: &S, p: &Project, cancel: &CancellationToken) 
     let ba = first(store, &[Role::Ba, Role::Pm, Role::Ceo]).ok_or("Không có ai viết yêu cầu (BA/PM/CEO)")?;
     let clar = clarify(store, p, &ba, cancel).await?;
     let task = format!(
-        "Đọc docs/PLAN.md, docs/DECISIONS.md, docs/CONSTITUTION.md và {clar} (câu trả lời làm rõ của khách — bắt buộc tuân theo). Viết docs/REQUIREMENTS.md theo MẪU ĐẶC TẢ CHUẨN:\n1. User story theo độ ưu tiên (P1 = bắt buộc cho bản đầu, P2, P3); mỗi story kiểm thử độc lập được, ghi \"Vì sao ưu tiên này\".\n2. Kịch bản nghiệm thu dạng Cho trước / Khi / Thì (Given / When / Then) cho từng story.\n3. Ca biên (edge cases).\n4. Yêu cầu chức năng đánh mã FR-001, FR-002… (mỗi yêu cầu một câu \"Hệ thống PHẢI …\", kiểm thử được, không mô tả cách làm kỹ thuật).\n5. Thực thể dữ liệu chính (nếu có).\n6. Tiêu chí thành công ĐO ĐƯỢC SC-001… (vd. \"người dùng ghi một khoản chi trong dưới 10 giây\"), không phụ thuộc công nghệ.\n7. Giả định và ngoài phạm vi.\nChia theo trang / module. Sau đó tạo ticket bằng create_ticket: 2–8 ticket nhỏ, MỖI TICKET THUỘC ĐÚNG MỘT TRANG HOẶC MỘT MODULE (ghi tên ở đầu tiêu đề, vd. \"[module giao-dich] Thêm / sửa / xóa giao dịch\"), ghi rõ các mã FR mà ticket đáp ứng trong mô tả, làm được độc lập, theo thứ tự nên làm, tiêu chí nghiệm thu kiểm tra được. Mọi FR phải thuộc ít nhất một ticket. Xong gọi finish.{}",
+        "Đọc docs/PLAN.md, docs/DECISIONS.md, docs/CONSTITUTION.md và {clar} (câu trả lời làm rõ của khách — bắt buộc tuân theo). Viết docs/REQUIREMENTS.md theo MẪU ĐẶC TẢ CHUẨN:\n1. User story theo độ ưu tiên (P1 = bắt buộc cho bản đầu, P2, P3); mỗi story kiểm thử độc lập được, ghi \"Vì sao ưu tiên này\".\n2. Kịch bản nghiệm thu dạng Cho trước / Khi / Thì (Given / When / Then) cho từng story.\n3. Ca biên (edge cases).\n4. Yêu cầu chức năng đánh mã FR-001, FR-002… (mỗi yêu cầu một câu \"Hệ thống PHẢI …\", kiểm thử được, không mô tả cách làm kỹ thuật).\n5. Thực thể dữ liệu chính (nếu có).\n6. Tiêu chí thành công ĐO ĐƯỢC SC-001… (vd. \"người dùng ghi một khoản chi trong dưới 10 giây\"), không phụ thuộc công nghệ.\n7. Giả định và ngoài phạm vi.\nCHỈ đặc tả đúng những gì khách yêu cầu: KHÔNG tự thêm máy chủ / backend, tài khoản, cơ sở dữ liệu, thống kê, chia sẻ mạng xã hội hay tính năng phụ khi khách không yêu cầu — ghi những ý đó vào mục Ngoài phạm vi.{{size_note}}
+Chia theo trang / module. Sau đó tạo ticket bằng create_ticket: {{ticket_range}} ticket nhỏ, MỖI TICKET THUỘC ĐÚNG MỘT TRANG HOẶC MỘT MODULE (ghi tên ở đầu tiêu đề, vd. \"[module giao-dich] Thêm / sửa / xóa giao dịch\"), ghi rõ các mã FR mà ticket đáp ứng trong mô tả, làm được độc lập, theo thứ tự nên làm, tiêu chí nghiệm thu kiểm tra được. Mọi FR phải thuộc ít nhất một ticket. Xong gọi finish.{}",
         revision_note(p)
     );
+    let task = task
+        .replace("{size_note}", if is_standard(p) { " Dự án cỡ vừa: tài liệu NGẮN GỌN (1–2 trang), bỏ qua mục không cần." } else { "" })
+        .replace("{ticket_range}", if is_standard(p) { "2–6" } else { "2–8" });
     let r = agent::run(store, Job { employee_id: ba.id.clone(), project_id: p.id.clone(), phase: "requirements", ticket_id: None, case_id: None, task }, cancel).await?;
     if r.created_tickets == 0 {
         // Make sure there is always something to build.
@@ -863,9 +929,14 @@ const DESIGN_DELIVERABLES: &str = "- docs/DESIGN.md: phong cách, hệ màu (mã
 const DESIGN_OPTION_IDS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
 /// Design directions offered for a project: its own number (set from chat), else the company setting.
+/// The company setting is capped by size (medium 2, big 3: each option is a full design job); a number the
+/// chairman set for this project is used as is.
 pub fn design_option_count(store: &S, p: &Project) -> usize {
-    let n = if p.design_options > 0 { p.design_options } else { store.with(|s| s.settings.design_options) };
-    (n as usize).clamp(1, DESIGN_OPTION_IDS.len())
+    if p.design_options > 0 {
+        return (p.design_options as usize).clamp(1, DESIGN_OPTION_IDS.len());
+    }
+    let cap = if is_standard(p) { 2 } else { 3 };
+    (store.with(|s| s.settings.design_options) as usize).clamp(1, cap)
 }
 
 pub fn set_design_options(store: &S, project_id: Option<&str>, n: u8) {
@@ -940,6 +1011,7 @@ pub fn draft_project(store: &S, name: &str, request: &str) -> Project {
         design_options: 0,
         team: vec![],
         gate_rounds: 0,
+        change_scope: String::new(),
         mode: String::new(),
         meetings: 0,
         tech: String::new(),
@@ -966,6 +1038,8 @@ pub fn request_changes(store: &S, id: &str, feedback: &str) -> Result<(), String
     store.update_project(id, |p| {
         p.feedback.push(feedback.trim().to_string());
         p.phase = Phase::Plan;
+        p.change_scope.clear();
+        p.gate_rounds = 0;
         p.release_rounds = 0;
         p.design_reviews = 0;
         p.qa_rounds = 0;
@@ -1234,6 +1308,15 @@ async fn phase_architecture(store: &S, p: &Project, cancel: &CancellationToken) 
     if let Some(from) = first(store, &[Role::Designer, Role::Pm, Role::Ba, Role::Ceo]) {
         handoff(store, &p.id, &from.id, &lead.id, "Yêu cầu và thiết kế đã sẵn sàng, nhờ anh/chị thiết kế kiến trúc.");
     }
+    if is_standard(p) {
+        let task = format!(
+            "Đọc docs/PLAN.md, docs/REQUIREMENTS.md (và docs/DESIGN.md nếu có).\n\n{}\n\nDỰ ÁN CỠ VỪA: viết docs/ARCHITECTURE.md NGẮN (1–2 trang): công nghệ và phiên bản (đúng PLAN.md; chọn giải pháp ĐƠN GIẢN NHẤT đáp ứng yêu cầu — chỉ có máy chủ / cơ sở dữ liệu khi yêu cầu thật sự cần), cây thư mục theo chuẩn trên, bảng trang / module và trách nhiệm, cách chạy / test / build. KHÔNG viết ADR, tài liệu từng module hay mô hình dữ liệu riêng. Nếu chưa có khung code thì tạo MỘT ticket kỹ thuật \"Khởi tạo khung dự án\" (README, .gitignore, cấu trúc thư mục, lệnh test / build). Xong gọi finish.{}",
+            crate::config::REPO_STANDARD,
+            revision_note(p)
+        );
+        agent::run(store, Job { employee_id: lead.id.clone(), project_id: p.id.clone(), phase: "architecture", ticket_id: None, case_id: None, task }, cancel).await?;
+        return Ok(());
+    }
     let task = format!(
         "Đọc docs/PLAN.md, docs/DECISIONS.md, docs/REQUIREMENTS.md (và docs/DESIGN.md nếu có).\n\n{}\n\nCông nghệ: dùng đúng công nghệ đã chốt trong PLAN.md (lựa chọn của Chủ tịch). Tuân thủ docs/CONSTITUTION.md và ghi mục \"Kiểm tra Constitution\" (từng nguyên tắc: đạt / lý do) trong ARCHITECTURE.md. Viết docs/ARCHITECTURE.md: công nghệ và phiên bản, cây thư mục cụ thể của dự án này theo đúng chuẩn trên, BẢNG DANH SÁCH TRANG / MODULE (tên, trách nhiệm, API công khai, phụ thuộc), quy tắc phụ thuộc, quy ước code, cách chạy / test / build, và hướng dẫn \"thêm một trang / module mới\" từng bước. Viết docs/modules/<ten-module>.md cho từng module. Ghi mỗi quyết định kiến trúc quan trọng thành một ADR trong docs/adr/. Tạo ticket kỹ thuật đầu tiên \"Khởi tạo khung dự án theo chuẩn công ty\" (thư mục, README, CHANGELOG, .gitignore, .editorconfig, CI) và các ticket kỹ thuật khác nếu cần. Xong gọi finish.{}",
         crate::config::REPO_STANDARD,
@@ -1284,7 +1367,7 @@ async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Resu
             .iter()
             .any(|m| m.project_id.as_deref() == Some(&p.id) && m.text.starts_with("Daily:"))
     });
-    if !already_had_daily {
+    if !already_had_daily && !is_standard(p) {
         if let Some(pm) = first(store, &[Role::Pm]) {
             let mut team: Vec<String> = vec![pm.id.clone()];
             for r in [Role::Dev, Role::Reviewer, Role::Tester, Role::Designer] {
@@ -1316,17 +1399,75 @@ pub(crate) fn is_fast(p: &Project) -> bool {
     p.mode == "fast"
 }
 
+/// Medium project (M): small team, short documents, one final QA.
+pub(crate) fn is_standard(p: &Project) -> bool {
+    p.mode == "standard"
+}
+
+/// S or M: the team is deliberately small and there are no company-wide ceremonies.
+pub(crate) fn is_small(p: &Project) -> bool {
+    is_fast(p) || is_standard(p)
+}
+
+/// A change request on a project that already has a backlog (not a first run).
+fn is_revision(store: &S, p: &Project) -> bool {
+    !p.feedback.is_empty() && !store.tickets_of(&p.id).is_empty()
+}
+
+/// Impact analysis of a change request (what a real PM does): the existing backlog is updated, cancelled
+/// or extended — never duplicated — and the steps to redo are decided. Returns the scope ("design", "arch", "code").
+async fn phase_change(store: &S, p: &Project, cancel: &CancellationToken) -> Result<String, String> {
+    let who = first(store, &[Role::Pm, Role::Architect, Role::Ceo]).ok_or("Cần PM, Tech Lead hoặc CEO để phân tích yêu cầu sửa")?;
+    let n = p.feedback.len();
+    let fb = p.feedback.last().cloned().unwrap_or_default();
+    store.post_message(Some(&p.id), "chairman", &who.id, format!("📋 Yêu cầu sửa đổi (vòng {n}): {fb}"), "handoff");
+    let file = format!("docs/CHANGES-sua-{n}.md");
+    let task = format!(
+        "YÊU CẦU SỬA ĐỔI vòng {n} của khách (Chủ tịch):\n{fb}\n\nYêu cầu gốc của dự án:\n{}\n\nSản phẩm đã có trong thư mục dự án. Các ticket hiện có:\n{}\nViệc của bạn là PHÂN TÍCH ẢNH HƯỞNG như PM của công ty phần mềm thật — KHÔNG lập kế hoạch lại từ đầu, không họp:\n1. Xem nhanh đúng phần liên quan (docs/PLAN.md, docs/REQUIREMENTS.md, design/, cấu trúc code) — không đọc hết mọi tài liệu.\n2. Xác định yêu cầu sửa chạm tới đâu: chỉ giao diện / thêm-bớt-sửa tính năng / dữ liệu / kiến trúc.\n3. Sắp lại backlog trên TICKET CŨ: ticket chưa làm không còn phù hợp → cancel_ticket; ticket cần đổi nội dung (kể cả ticket đã xong nay phải sửa) → update_ticket (ticket được mở lại để làm); chỉ create_ticket cho phần việc thật sự MỚI; set_priority theo thứ tự làm. KHÔNG tạo ticket trùng nội dung với ticket đã có. Không thêm việc khách không yêu cầu.\n4. Ghi {file} ngắn gọn: yêu cầu sửa, phạm vi ảnh hưởng, ticket đã hủy / sửa / thêm, rủi ro.\n5. Gọi finish; dòng ĐẦU của tóm tắt BẮT BUỘC có dạng \"PHẠM VI: …\" với một hoặc nhiều từ: thiet-ke (phải sửa bản thiết kế giao diện trước khi code), kien-truc (phải đổi công nghệ / cấu trúc dự án / dữ liệu), code (chỉ cần sửa code). Ví dụ: \"PHẠM VI: thiet-ke, code\".",
+        p.request,
+        ticket_list(store, &p.id)
+    );
+    let r = agent::run(store, Job { employee_id: who.id.clone(), project_id: p.id.clone(), phase: "change", ticket_id: None, case_id: None, task }, cancel).await?;
+    let summary = summary_of(&r.outcome);
+    let scope = change_scope_of(&summary);
+    store.update_project(&p.id, |x| x.change_scope = scope.clone());
+    store.post_message(Some(&p.id), &who.id, "all", format!("Phân tích yêu cầu sửa: {}", short_text(&summary, 500)), "chat");
+    Ok(scope)
+}
+
+/// Reads "PHẠM VI: thiet-ke, code" from the analysis summary → "design,code" (code is always redone).
+fn change_scope_of(summary: &str) -> String {
+    let head = summary.lines().find(|l| l.to_lowercase().contains("phạm vi")).unwrap_or("").to_lowercase();
+    let mut scope = vec![];
+    if head.contains("thiet-ke") || head.contains("thiết kế") || head.contains("thiet ke") {
+        scope.push("design");
+    }
+    if head.contains("kien-truc") || head.contains("kiến trúc") || head.contains("kien truc") {
+        scope.push("arch");
+    }
+    scope.push("code");
+    scope.join(",")
+}
+
+/// Medium project before hand-over: one final QA (functional + visual), then the automatic browser gate.
+async fn release_standard(store: &S, p: &Project, cancel: &CancellationToken) -> Result<bool, String> {
+    if p.qa_rounds < MAX_QA_ROUNDS && final_qa(store, p, cancel).await? {
+        return Ok(true);
+    }
+    ship_gate(store, p, cancel).await
+}
+
 /// Who builds a small project alone: the Tech Lead (strongest model), else a Dev.
 fn fast_builder(store: &S) -> Option<Employee> {
     first(store, &[Role::Architect, Role::Dev])
 }
 
-/// How this project is worked: the chairman's choice ("fast" / "full"); projects without one use the full process.
+/// The project's size: the chairman's choice ("fast" / "standard" / "full"); a new project without one is medium.
 /// The fast lane is announced once so the chairman knows who is building it.
 fn decide_mode(store: &S, p: &Project) -> String {
     if p.mode.is_empty() {
-        store.update_project(&p.id, |x| x.mode = "full".into());
-        return "full".into();
+        store.update_project(&p.id, |x| x.mode = "standard".into());
+        return "standard".into();
     }
     if p.mode == "fast" && p.feedback.is_empty() && store.tickets_of(&p.id).is_empty() {
         let who = fast_builder(store).map(|e| format!("{} ({})", e.name, crate::config::role_label(e.role))).unwrap_or_else(|| "một kỹ sư".into());
@@ -1339,7 +1480,7 @@ fn decide_mode(store: &S, p: &Project) -> String {
 /// The fast lane's single piece of work: the whole request (or this round of changes) as one ticket.
 fn fast_plan(store: &S, p: &Project) -> Result<(), String> {
     let builder = fast_builder(store).ok_or("Công ty cần ít nhất 1 Tech Lead hoặc Dev đang làm việc")?;
-    let open = store.tickets_of(&p.id).iter().any(|t| !matches!(t.status, TicketStatus::Done | TicketStatus::Blocked));
+    let open = store.tickets_of(&p.id).iter().any(|t| !matches!(t.status, TicketStatus::Done | TicketStatus::Blocked | TicketStatus::Cancelled));
     if !open {
         let (title, description) = match p.feedback.last() {
             Some(fb) => (format!("[Sửa đổi {}] {}", p.feedback.len(), short_text(fb, 70)), format!("YÊU CẦU SỬA của khách (vòng {}):\n{fb}\n\nYêu cầu gốc của dự án:\n{}\n\nSản phẩm cũ đã có trong thư mục dự án: chỉ sửa phần được yêu cầu, không làm hỏng phần đang chạy.", p.feedback.len(), p.request)),
@@ -1544,6 +1685,7 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start
     let max_bounces = store.with(|s| s.settings.max_bounces);
     let project_dir = store.project(pid).map(|p| store.dir_of(&p));
     let fast = store.project(pid).is_some_and(|p| is_fast(&p));
+    let standard = store.project(pid).is_some_and(|p| is_standard(&p));
     loop {
         let t = store.ticket(tid).ok_or("Ticket không tồn tại")?;
         let dev_summary = if matches!(start_stage, TicketStatus::Review | TicketStatus::Testing) {
@@ -1660,6 +1802,11 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start
                 "{}\nNgười làm bàn giao: {dev_summary}{bounce_focus}\n\nCHẾ ĐỘ LÀM NHANH (dự án nhỏ): kiểm tra như NGƯỜI DÙNG THẬT, không cần bộ tài liệu QA đầy đủ. Mở bản xem thử {} bằng trình duyệt ở 1280px và 375px, đi qua TỪNG Ý trong yêu cầu của khách (bấm thử mọi nút, nhập thử, xem console có lỗi không), chụp màn hình để tự soi giao diện (chữ khó đọc, lệch, tràn, hình méo). Ghi docs/qa/QA-REPORT.md ngắn: đã thử gì, kết quả, lỗi còn lại. BẮT BUỘC gọi pass_ticket nếu người dùng dùng được trọn vẹn, hoặc fail_ticket kèm từng lỗi cụ thể (bước làm, thấy gì, mong đợi gì).",
                 ticket_brief(&t),
                 crate::config::preview_url(pid)
+            )
+        } else if standard {
+            format!(
+                "{}\nDev báo: {dev_summary}{bounce_focus}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu: chạy NGAY bộ test hiện có;{browser_step} xem `git diff` đúng phạm vi ticket (không đọc lại cả dự án). Thêm test tự động cho ca quan trọng nếu còn thiếu. Ghi ngắn kết quả của ticket này vào docs/qa/QA-REPORT.md — dự án cỡ vừa KHÔNG cần TEST-CASES / RTM / CSV. BẮT BUỘC gọi pass_ticket nếu đạt hết tiêu chí, hoặc fail_ticket kèm từng lỗi cụ thể (bước làm, thấy gì, mong đợi gì).",
+                ticket_brief(&t),
             )
         } else { format!(
             "{}\nDev báo: {dev_summary}{bounce_focus}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy NGAY bộ test hiện có;{browser_step} xem `git show --stat` / `git diff` đúng phạm vi ticket (KHÔNG đọc lại từ đầu đến cuối các tệp dài > 500 dòng khi test đã xanh và tiêu chí đã rõ); bổ sung/giữ lại test tự động cho ca biên nếu còn thiếu (tên test ghi mã TC); cập nhật bộ tài liệu QA trong docs/qa/ CHỈ cho phần của ticket này (các dòng case của FR trong ticket ở TEST-CASES.md với kết quả thực tế + trạng thái, các dòng FR đó trong RTM.md, bug mới / retest trong BUGS.md; chưa có TEST-PLAN.md thì viết). BẮT BUỘC gọi pass_ticket ngay khi đạt hết tiêu chí, hoặc fail_ticket kèm mô tả lỗi cụ thể nếu chưa đạt.",
@@ -1903,7 +2050,13 @@ async fn final_qa(store: &S, p: &Project, cancel: &CancellationToken) -> Result<
     if let Some(from) = first(store, &[Role::Devops]) {
         handoff(store, &p.id, &from.id, &tester.id, "Bản phát hành đã build xong, nhờ QA kiểm định toàn bộ lần cuối.");
     }
-    let task = format!(
+    let task = if is_standard(p) {
+        format!(
+            "KIỂM ĐỊNH CUỐI trước khi bàn giao Chủ tịch (dự án cỡ vừa: MỘT lần kiểm định gộp cả soát giao diện).\n1. Chạy lint / typecheck / test / build của dự án (có bước build thì build để bản xem thử chạy được).\n2. Mở bản xem thử {} bằng trình duyệt thật ở 1280px và 375px, đi qua TỪNG tiêu chí nghiệm thu trong docs/REQUIREMENTS.md như người dùng mới: bấm mọi nút / liên kết, tải lại trang, xem console và tệp 404.\n3. Soát giao diện so với design/mockup.html (nếu có): lệch, tràn ngang, chữ bị cắt / khó đọc, tương phản kém, sai màu / font.\nMỗi lỗi THẬT gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình) — hệ thống chỉ biết có lỗi qua report_issue; gộp lỗi nhỏ cùng trang vào một; không báo lỗi vì sở thích cá nhân. Viết docs/QA-REPORT.md ngắn: đã kiểm gì, kết quả, lỗi còn lại, kết luận. Đảm bảo README.md có cách cài / chạy. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
+            crate::config::preview_url(&p.id),
+            revision_note(p)
+        )
+    } else { format!(
         "KIỂM ĐỊNH CUỐI trước khi bàn giao Chủ tịch — tiêu chuẩn sản phẩm thương mại, không phải bài tập. Theo kỹ năng Tester của bạn:
 1. Chạy toàn bộ lint / typecheck / test / build của dự án.
 2. Chạy lại TOÀN BỘ test case trong docs/qa/TEST-CASES.md (regression) và mọi tiêu chí nghiệm thu trong docs/REQUIREMENTS.md trên trình duyệt thật ở bản xem thử {} — cả 1280px và 375px — như một người dùng mới: luồng chính, ca biên, dữ liệu rỗng / nhiều, tải lại trang, lỗi console.
@@ -1912,7 +2065,7 @@ Bấm thử TỪNG nút / liên kết chính trên trang thật (nút phải nh�
 Mỗi lỗi THẬT BẮT BUỘC gọi report_issue (bước tái hiện, mong đợi / thực tế, cỡ màn hình, mức độ) — hệ thống CHỈ biết có lỗi qua report_issue; ghi vào tệp hay nhắn tin thì lỗi vẫn bị coi là không có — và ghi vào docs/qa/BUGS.md. Chỉ kết luận \"đủ điều kiện bàn giao\" khi không còn lỗi và không còn ticket bị chặn. Cập nhật trạng thái mới nhất trong TEST-CASES.md và RTM.md; xuất thêm docs/qa/test-cases.csv và docs/qa/bugs.csv (mở được bằng Excel / Google Sheets). Viết docs/QA-REPORT.md dạng Test Summary Report: tổng số case, Pass / Fail / Blocked / Not Run và % đạt, số bug theo Severity và trạng thái, độ phủ RTM (FR có case đạt / tổng FR), exit criteria trong TEST-PLAN đạt chưa, rủi ro còn lại, kết luận đủ điều kiện phát hành hay không. Xong gọi finish với kết luận có đủ chất lượng bàn giao không.{}",
         crate::config::preview_url(&p.id),
         revision_note(p)
-    );
+    ) };
     let r = agent::run(store, Job { employee_id: tester.id.clone(), project_id: p.id.clone(), phase: "final_qa", ticket_id: None, case_id: None, task }, cancel).await?;
     if r.created_tickets > 0 {
         if let Some(dev) = first(store, &[Role::Dev]) {
@@ -1984,7 +2137,7 @@ async fn phase_report(store: &S, p: &Project, cancel: &CancellationToken) -> Res
     if let Some(from) = first(store, &[Role::Devops, Role::Tester, Role::Dev]) {
         handoff(store, &p.id, &from.id, &ceo.id, "Sản phẩm đã sẵn sàng, mời CEO tổng kết.");
     }
-    let all = everyone(store);
+    let all = members(store, p);
     meeting(store, &p.id, all.clone(), "Họp tổng kết", true);
     let task = format!(
         "Đội đã xử lý các ticket:\n{list}\nĐọc docs/ (PLAN, REQUIREMENTS, SPRINT, DESIGN, RELEASE nếu có) và xem các tệp sản phẩm. Viết docs/REPORT.md: đã làm gì (nhắc tài liệu đặc tả docs/SPECIFICATION.md cho khách), cách chạy/mở sản phẩm, hạn chế còn lại (nêu rõ ticket bị Blocked nếu có), ghi nhận thành viên nổi bật. Sau đó gọi finish với lời báo cáo ngắn gửi Chủ tịch.{}",
@@ -1998,7 +2151,7 @@ async fn phase_report(store: &S, p: &Project, cancel: &CancellationToken) -> Res
             return Err(e);
         }
     };
-    let minutes_result = if is_fast(p) { Ok(()) } else { minutes(store, p, "Họp tổng kết", "docs/REPORT.md", cancel).await };
+    let minutes_result = if is_small(p) { Ok(()) } else { minutes(store, p, "Họp tổng kết", "docs/REPORT.md", cancel).await };
     meeting(store, &p.id, all, "", false);
     minutes_result?;
     let summary = summary_of(&r.outcome);
@@ -2181,5 +2334,19 @@ mod vote_tests {
         tks.sort_by_key(|t| ticket_pick_key(t));
         let keys: Vec<&str> = tks.iter().map(|t| t.key.as_str()).collect();
         assert_eq!(keys, vec!["T-5", "T-4", "T-6"]);
+    }
+}
+
+#[cfg(test)]
+mod change_scope_tests {
+    use super::change_scope_of;
+
+    #[test]
+    fn reads_the_scope_line() {
+        assert_eq!(change_scope_of("PHẠM VI: thiet-ke, code\nĐã hủy T-4…"), "design,code");
+        assert_eq!(change_scope_of("Tóm tắt\nPhạm vi: kiến trúc"), "arch,code");
+        assert_eq!(change_scope_of("PHẠM VI: code"), "code");
+        // No scope line: only the code is redone.
+        assert_eq!(change_scope_of("Đã sắp lại backlog"), "code");
     }
 }

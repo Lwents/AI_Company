@@ -19,7 +19,7 @@ export function KanbanPanel() {
     <div className="panel-body">
       {TICKET_COLUMNS.map((col) => {
         const list = tickets.filter((t) => t.status === col.id);
-        if (list.length === 0 && (col.id === "blocked" || col.id === "review")) return null;
+        if (list.length === 0 && (col.id === "blocked" || col.id === "review" || col.id === "cancelled")) return null;
         return (
           <section key={col.id} className="kcol">
             <h4 style={{ borderColor: col.color }}>

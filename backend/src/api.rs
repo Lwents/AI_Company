@@ -153,7 +153,7 @@ struct NewProject {
     /// Or: a folder on this computer (copied, the original is left alone).
     #[serde(default)]
     local_path: String,
-    /// "fast" / "full" / "" (the CEO decides).
+    /// Project size: "fast" (S) / "standard" (M) / "full" (L); "" = medium.
     #[serde(default)]
     mode: String,
 }
@@ -224,7 +224,8 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         design_options: 0,
         team: vec![],
         gate_rounds: 0,
-        mode: if matches!(body.mode.as_str(), "fast" | "full") { body.mode.clone() } else { String::new() },
+        change_scope: String::new(),
+        mode: if matches!(body.mode.as_str(), "fast" | "standard" | "full") { body.mode.clone() } else { String::new() },
         meetings: 0,
         tech: body.tech.trim().chars().take(300).collect(),
         versions: vec![],
@@ -359,16 +360,7 @@ async fn project_action(State(store): State<S>, Path((id, action)): Path<(String
             if running {
                 return Err(bad("Dự án đang chạy, hãy tạm dừng trước"));
             }
-            store.stop_ops(&id);
-            store.update_project(&id, |p| {
-                p.feedback.push(fb.trim().to_string());
-                p.phase = Phase::Plan;
-                p.release_rounds = 0;
-                p.design_reviews = 0;
-                p.qa_rounds = 0;
-                p.security_reviews = 0;
-            });
-            workflow::start(&store, &id);
+            workflow::request_changes(&store, &id, &fb).map_err(bad)?;
         }
         _ => return Err(bad("Hành động không hợp lệ")),
     }

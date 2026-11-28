@@ -111,7 +111,28 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
             obj(json!({ "question": { "type": "string" } }), &["question"]),
         ));
     }
-    if phase == "planning" {
+    if phase == "change" {
+        t.push(tool(
+            "update_ticket",
+            "Sửa nội dung một ticket đã có cho đúng yêu cầu sửa đổi (chỉ ghi trường cần đổi). Ticket được mở lại (Cần làm) để Dev làm theo nội dung mới.",
+            obj(
+                json!({
+                    "key": { "type": "string", "description": "Mã ticket, vd T-3" },
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "acceptance": { "type": "array", "items": { "type": "string" } },
+                    "note": { "type": "string", "description": "Thay đổi gì và vì sao (Dev sẽ đọc)" }
+                }),
+                &["key", "note"],
+            ),
+        ));
+        t.push(tool(
+            "cancel_ticket",
+            "Hủy một ticket CHƯA LÀM không còn phù hợp với yêu cầu sửa đổi (bị thay thế, khách không cần nữa).",
+            obj(json!({ "key": { "type": "string" }, "reason": { "type": "string" } }), &["key", "reason"]),
+        ));
+    }
+    if matches!(phase, "planning" | "change") {
         t.push(tool(
             "set_priority",
             "Đặt độ ưu tiên cho ticket: 1 = cao (làm trước), 2 = vừa, 3 = thấp.",
@@ -125,7 +146,7 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
             obj(json!({ "title": { "type": "string" }, "description": { "type": "string" } }), &["title", "description"]),
         ));
     }
-    if matches!(phase, "requirements" | "architecture" | "planning" | "design_review" | "analyze") {
+    if matches!(phase, "requirements" | "architecture" | "planning" | "design_review" | "analyze" | "change") {
         t.push(tool(
             "create_ticket",
             "Tạo một ticket công việc cho Dev. Mỗi ticket nhỏ, làm được độc lập, có tiêu chí nghiệm thu kiểm tra được.",
@@ -553,6 +574,46 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
             ctx.created_tickets += 1;
             store.kpi(&me.id, |k| k.tickets_created += 1);
             Ok(format!("Đã tạo {key}"))
+        }
+        "update_ticket" | "cancel_ticket" => {
+            let key = s(input, "key").trim().to_uppercase();
+            let (id, status) = store
+                .with(|st| st.tickets.iter().find(|t| t.project_id == pid && t.key.to_uppercase() == key).map(|t| (t.id.clone(), t.status)))
+                .ok_or_else(|| format!("Không có ticket {key}"))?;
+            if name == "cancel_ticket" {
+                if matches!(status, TicketStatus::InProgress | TicketStatus::Review | TicketStatus::Testing) {
+                    return Err(format!("{key} đang được làm, không hủy được; dùng update_ticket để đổi nội dung"));
+                }
+                let reason = s(input, "reason").trim().to_string();
+                store.update_ticket(&id, |t| {
+                    t.status = TicketStatus::Cancelled;
+                    t.notes.push(format!("{} hủy: {reason}", me.name));
+                });
+                return Ok(format!("Đã hủy {key}"));
+            }
+            let title = s(input, "title").trim().to_string();
+            let description = s(input, "description").trim().to_string();
+            let acceptance: Vec<String> = input
+                .get("acceptance")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let note = s(input, "note").trim().to_string();
+            store.update_ticket(&id, |t| {
+                if !title.is_empty() {
+                    t.title = title.clone();
+                }
+                if !description.is_empty() {
+                    t.description = description.clone();
+                }
+                if !acceptance.is_empty() {
+                    t.acceptance = acceptance.clone();
+                }
+                t.notes.push(format!("{} (sửa đổi): {note}", me.name));
+                t.status = TicketStatus::Todo;
+                t.bounces = 0;
+            });
+            Ok(format!("Đã cập nhật {key} và mở lại để làm"))
         }
         "set_priority" => {
             let key = s(input, "key").trim().to_uppercase();

@@ -97,6 +97,7 @@ export const TICKET_COLUMNS: Array<{ id: TicketStatus; label: string; color: str
   { id: "testing", label: "Đang test", color: "#e0b04a" },
   { id: "done", label: "Xong", color: "#4cc38a" },
   { id: "blocked", label: "Bị chặn", color: "#e46a6a" },
+  { id: "cancelled", label: "Đã hủy", color: "#6b7280" },
 ];
 
 export const PHASES: Array<{ id: Phase; label: string }> = [

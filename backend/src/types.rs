@@ -121,6 +121,8 @@ pub enum TicketStatus {
     Testing,
     Done,
     Blocked,
+    /// Dropped by a change request (no longer part of the product).
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -230,10 +232,15 @@ pub struct Project {
     /// Rounds the hand-over gate sent the work back (blocked tickets / machine-found problems).
     #[serde(default)]
     pub gate_rounds: u32,
-    /// How the team works: "fast" (one strong engineer builds it straight through, for small jobs),
-    /// "full" (the whole company process); "" = full.
+    /// Project size = how the team works: "fast" (S: one strong engineer builds it straight through),
+    /// "standard" (M: a small team, short documents, one final QA), "full" (L: the whole company process).
+    /// "" = not decided yet (new projects get "standard"; older projects already past planning keep "full").
     #[serde(default)]
     pub mode: String,
+    /// What the current change request touches, decided by the impact analysis ("design", "arch", "code");
+    /// "" = no impact analysis this round.
+    #[serde(default)]
+    pub change_scope: String,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,

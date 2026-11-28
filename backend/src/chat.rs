@@ -34,7 +34,7 @@ fn reply_tool() -> ToolDef {
                 "new_project_name": { "type": "string", "description": "Tên ngắn cho dự án nháp khi task_project là \"new\" (vd. \"Web cờ vua\")." },
                 "choose_design": { "type": "string", "description": "CHỈ khi đang chờ Chủ tịch chọn phương án thiết kế và Chủ tịch nói chọn phương án nào: chữ cái của phương án (a, b, c…), kèm góp ý nếu có, ví dụ \"b: chữ to hơn\". Bỏ trống nếu không." },
                 "change_request": { "type": "string", "description": "CHỈ khi Chủ tịch yêu cầu sửa / thêm / làm lại cho dự án (đã xong, đang chờ duyệt hoặc đang tạm dừng): mô tả đầy đủ yêu cầu thay đổi để cả đội làm vòng sửa đổi. Bỏ trống nếu không." },
-                "work_mode": { "type": "string", "enum": ["none", "fast", "full"], "description": "Mặc định none. fast: CHỈ khi Chủ tịch bảo làm NHANH / gọn cho dự án này; full: CHỈ khi Chủ tịch bảo làm ĐỦ QUY TRÌNH công ty." },
+                "work_mode": { "type": "string", "enum": ["none", "fast", "standard", "full"], "description": "Mặc định none. Cỡ dự án / cách làm, CHỈ đổi khi Chủ tịch yêu cầu: fast = làm NHANH (một kỹ sư làm liền), standard = cỡ VỪA (nhóm ~7 người, tài liệu ngắn), full = ĐỦ QUY TRÌNH công ty (dự án lớn)." },
                 "resend_designs": { "type": "boolean", "description": "true khi Chủ tịch muốn XEM LẠI các mẫu / phương án thiết kế đã làm (kèm ảnh): hệ thống mở lại thẻ chọn mẫu ở tab Duyệt." },
                 "set_team": { "type": "array", "items": { "type": "string" }, "description": "CHỈ khi Chủ tịch bảo đổi / rút gọn / thêm người trong NHÓM LÀM DỰ ÁN này: danh sách TÊN nhân viên của nhóm mới (đúng tên trong danh sách nhân viên). Bỏ trống nếu không." }
             },
@@ -152,7 +152,7 @@ fn context(store: &S, emp: &Employee, msg: &ChatMsg) -> String {
         if !pending.is_empty() {
             out += &format!("Đang chờ Chủ tịch duyệt:\n{}\n", pending.join("\n"));
         }
-        out += &format!("Cách làm: {}\n", match p.mode.as_str() { "fast" => "CHẾ ĐỘ NHANH (một kỹ sư làm liền, không họp / đặc tả)", "full" => "ĐỦ QUY TRÌNH công ty", _ => "ĐỦ QUY TRÌNH công ty (mặc định)" });
+        out += &format!("Cách làm: {}\n", match p.mode.as_str() { "fast" => "CỠ NHỎ — làm nhanh (một kỹ sư làm liền, không họp / đặc tả)", "standard" => "CỠ VỪA (nhóm ~7 người, tài liệu ngắn, một lần kiểm định cuối)", "full" => "CỠ LỚN — đủ quy trình công ty", _ => "chưa chọn (sẽ làm cỡ vừa)" });
         let team: Vec<String> = p.team.iter().map(|id| store.display_name(id)).collect();
         out += &format!("Nhóm dự án hiện tại ({} người): {}\n", team.len(), if team.is_empty() { "chưa chia nhóm (dùng chung cả công ty)".into() } else { team.join(", ") });
         let sets = design_sets(store, &p);
@@ -312,17 +312,18 @@ Góp ý: {note}") };
             None => done.push("ℹ️ Hiện không có phương án thiết kế nào đang chờ chọn.".into()),
         }
     }
-    if let Some(m) = input.get("work_mode").and_then(Value::as_str).filter(|m| matches!(*m, "fast" | "full")) {
+    if let Some(m) = input.get("work_mode").and_then(Value::as_str).filter(|m| matches!(*m, "fast" | "standard" | "full")) {
         match project_id.and_then(|id| store.project(id)) {
             None => done.push("ℹ️ Anh/chị chọn dự án (tab Dự án) để em đổi cách làm.".into()),
             Some(p) if p.mode == m => {}
             Some(p) => {
                 store.update_project(&p.id, |x| x.mode = m.to_string());
-                done.push(if m == "fast" {
-                    format!("✅ Dự án \"{}\" chuyển sang CHẾ ĐỘ NHANH (áp dụng từ bước / vòng sửa tiếp theo).", p.name)
-                } else {
-                    format!("✅ Dự án \"{}\" chuyển sang ĐỦ QUY TRÌNH (áp dụng từ bước / vòng sửa tiếp theo).", p.name)
-                });
+                let label = match m {
+                    "fast" => "CỠ NHỎ — LÀM NHANH",
+                    "standard" => "CỠ VỪA",
+                    _ => "CỠ LỚN — ĐỦ QUY TRÌNH",
+                };
+                done.push(format!("✅ Dự án \"{}\" chuyển sang {label} (áp dụng từ bước / vòng sửa tiếp theo; nhóm dự án giữ nguyên, đổi nhóm thì nhắn em).", p.name));
             }
         }
     }
@@ -610,6 +611,7 @@ mod side_task_tests {
             design_options: 0,
             team: vec![],
             gate_rounds: 0,
+            change_scope: String::new(),
             mode: String::new(),
             meetings: 0,
             tech: String::new(),

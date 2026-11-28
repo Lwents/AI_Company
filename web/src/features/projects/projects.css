@@ -160,6 +160,14 @@
   background: var(--amber);
   color: #1b1b1b;
 }
+.pill.mode-standard {
+  background: #5b8def;
+  color: #fff;
+}
+.pill.mode-full {
+  background: #a77bf3;
+  color: #fff;
+}
 .phases .skip {
   opacity: 0.35;
   text-decoration: line-through;

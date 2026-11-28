@@ -159,6 +159,14 @@ fn script(store: &S, req: &LlmRequest<'_>) -> Option<(String, Vec<ToolCall>)> {
                 (s(""), vec![call("finish", json!({ "summary": "Đã xếp ưu tiên ticket và viết docs/SPRINT.md." }))]),
             ]
         }
+        "change" => vec![
+            (s("Phân tích ảnh hưởng: đổi giao diện, sửa ticket cũ thay vì tạo mới."), vec![
+                call("update_ticket", json!({ "key": "T-1", "description": "Giao diện theo hướng thiết kế mới của khách.", "note": "Khách yêu cầu đổi giao diện" })),
+                call("cancel_ticket", json!({ "key": "T-2", "reason": "Khách không cần lưu dữ liệu nữa" })),
+                call("write_file", json!({ "path": "docs/CHANGES-sua-1.md", "content": "# Yêu cầu sửa 1\n\n- Sửa T-1 (giao diện), hủy T-2.\n" })),
+            ]),
+            (s(""), vec![call("finish", json!({ "summary": "PHẠM VI: thiet-ke, code\nSửa T-1, hủy T-2." }))]),
+        ],
         "design" => vec![
             (s("Thiết kế giao diện gọn, sáng."), vec![
                 call("write_file", json!({ "path": "docs/DESIGN.md", "content": "# Thiết kế\n\n- Phong cách: thẻ trắng nổi trên nền xám nhạt.\n- Màu chính #4f6bed, chữ #1d2433, nền #f3f5f9, lỗi #c0392b.\n- Font: system-ui, tiêu đề 22px.\n- Bố cục: một cột, rộng tối đa 440px, căn giữa.\n- Trạng thái: việc xong gạch ngang màu xám; danh sách trống hiện \"Chưa có việc nào.\"\n" })),

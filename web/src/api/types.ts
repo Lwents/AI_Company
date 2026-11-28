@@ -47,7 +47,7 @@ export interface EmpRuntime {
   ticketId?: string;
 }
 
-export type TicketStatus = "todo" | "in_progress" | "review" | "testing" | "done" | "blocked";
+export type TicketStatus = "todo" | "in_progress" | "review" | "testing" | "done" | "blocked" | "cancelled";
 export interface Ticket {
   id: string;
   projectId: string;
@@ -84,7 +84,7 @@ export interface Project {
   id: string;
   /** Employees working on this project (picked when it starts). */
   team: string[];
-  /** "fast" = one engineer builds it straight through, "full" (or empty) = the whole company process. */
+  /** Size: "fast" (S, one engineer), "standard" (M, small team, short docs), "full" (L, the whole company process). */
   mode?: string;
   name: string;
   slug: string;
