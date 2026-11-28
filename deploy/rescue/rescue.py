@@ -378,7 +378,7 @@ function tab(n){$("t1").setAttribute("aria-selected",n===1);$("t2").setAttribute
 $("t1").onclick=()=>tab(1);$("t2").onclick=()=>tab(2);
 async function refresh(){try{const s=await fetch("api/status").then(r=>r.json());const p=$("pill");p.className="pill "+(s.ok?"ok":"bad");p.textContent=s.ok?"hệ thống chạy":"hệ thống KHÔNG chạy";
 $("sum").innerHTML=`Dịch vụ: <b class="${s.active==="active"?"ok":"bad"}">${s.active}</b> từ ${s.since||"—"}<br>Web chính: <b class="${s.web.startsWith("trả lời")?"ok":"bad"}">${s.web}</b><br>Bản đang chạy: ${s.binary} · bản trước: ${s.prev}`;
-$("logs").textContent=s.logs||"(không đọc được log)";$("commits").textContent=s.commits}catch(e){$("pill").textContent="?"}}
+const lg=$("logs");const atEnd=lg.scrollTop+lg.clientHeight>=lg.scrollHeight-20||!lg.dataset.seen;lg.textContent=s.logs||"(không đọc được log)";if(atEnd){lg.scrollTop=lg.scrollHeight;lg.dataset.seen=1}$("commits").textContent=s.commits}catch(e){$("pill").textContent="?"}}
 $("re").onclick=async()=>{if(!confirm("Khởi động lại hệ thống chính?"))return;alert((await post("restart")).message);refresh()};
 $("rb").onclick=async()=>{if(!confirm("Quay về bản trước? (bản hiện tại được giữ lại thành .bad)"))return;alert((await post("rollback")).message);refresh()};
 const term=new Terminal({cursorBlink:true,fontFamily:'"Cascadia Mono",Consolas,"SF Mono",Menlo,ui-monospace,monospace',fontSize:innerWidth<600?12:14,lineHeight:1.15,scrollback:5000,theme:{background:"#0c0c0c",foreground:"#e6e6e6",cursor:"#e6e6e6"}});
