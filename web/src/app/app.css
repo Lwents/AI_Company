@@ -249,3 +249,24 @@ nav button.on {
 .mcp-list p {
   margin: 4px 0 0 26px;
 }
+
+/* Server unreachable for a while: link to the rescue page. */
+.down-banner {
+  position: fixed;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  max-width: calc(100vw - 32px);
+  background: #7a2e35;
+  color: #fff;
+  border: 2px solid #ff8a8a;
+  padding: 8px 12px;
+  font-size: 14px;
+  text-align: center;
+}
+.down-banner a {
+  color: #fff;
+  font-weight: bold;
+  text-decoration: underline;
+}

@@ -1,0 +1,23 @@
+# The rescue page: a separate service so it stays up while the main app deploys, restarts or breaks.
+# Installed by hand (not by CI): copy rescue.py to /opt/ai-company-rescue/ and this file to /etc/systemd/system/.
+[Unit]
+Description=AI Company rescue page (status, restart, roll back, maintainer chat)
+After=network-online.target
+
+[Service]
+User=aico
+Group=aico
+WorkingDirectory=/opt/ai-company
+Environment=AI_COMPANY_ROOT=/opt/ai-company
+Environment=RESCUE_PORT=18790
+EnvironmentFile=/etc/ai-company/env
+ExecStart=/usr/bin/python3 /opt/ai-company-rescue/rescue.py
+Restart=always
+RestartSec=3
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ai-company /home/aico
+MemoryMax=900M
+
+[Install]
+WantedBy=multi-user.target

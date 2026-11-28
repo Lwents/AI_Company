@@ -47,6 +47,14 @@ fn save_session(store: &S, id: Option<&str>) {
     let _ = std::fs::write(session_file(store), json!({ "session": id.unwrap_or("") }).to_string());
 }
 
+/// The rescue page (a separate service) runs the same CLI on the same code: never both at once.
+/// It writes the CLI's pid to data/maintainer.busy while working.
+fn busy_elsewhere(store: &S) -> bool {
+    let Ok(pid) = std::fs::read_to_string(store.data_dir.join("maintainer.busy")) else { return false };
+    let pid: u32 = pid.trim().parse().unwrap_or(0);
+    pid > 0 && (cfg!(not(unix)) || Path::new(&format!("/proc/{pid}")).exists())
+}
+
 fn has_cargo() -> bool {
     std::process::Command::new("cargo").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
@@ -179,9 +187,14 @@ async fn run(store: &S, emp: &Employee, pid: Option<&str>, dir: &Path, text: &st
     let say = |t: &str| {
         store.post_message(pid, &emp.id, "chairman", t.to_string(), "chat");
     };
+    if busy_elsewhere(store) {
+        return Err("Khôi đang làm một việc khác từ trang cứu hộ. Đợi xong hoặc bấm Dừng ở trang cứu hộ (/rescue/).".into());
+    }
     store.set_runtime(&emp.id, EmpStatus::Working, "Claude CLI đang đọc yêu cầu", None, None);
     let session = load_session(store);
     let mut child = command(dir, text, session.as_deref(), emp).spawn().map_err(|e| format!("Không chạy được Claude CLI: {e}"))?;
+    let busy = store.data_dir.join("maintainer.busy");
+    let _ = std::fs::write(&busy, child.id().unwrap_or(0).to_string());
     let stop = CancellationToken::new();
     *current().lock().unwrap() = Some(stop.clone());
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -240,6 +253,7 @@ async fn run(store: &S, emp: &Employee, pid: Option<&str>, dir: &Path, text: &st
         }
     }
     *current().lock().unwrap() = None;
+    let _ = std::fs::remove_file(&busy);
     if stopped.is_some() {
         let _ = child.kill().await;
     }
