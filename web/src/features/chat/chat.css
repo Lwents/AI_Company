@@ -51,9 +51,22 @@
   gap: 6px;
   padding: 8px;
   border-top: 3px solid var(--line);
-  align-items: flex-start;
+  align-items: center;
 }
 .composer select {
   width: 130px;
   flex-shrink: 0;
+}
+.composer input {
+  flex: 1;
+  min-width: 0;
+}
+.composer button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .composer select {
+    width: 102px;
+  }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "@/api/http";
+import { api, uploadChatFiles } from "@/api/http";
 import { useStore } from "@/store";
 import { ROLE_LABEL } from "@/shared/labels";
 import { time } from "@/shared/format";
@@ -19,7 +19,11 @@ export function ChatPanel() {
   const [onlyProject, setOnlyProject] = useState(true);
   const [to, setTo] = useState("");
   const [text, setText] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const msgs = (state?.messages ?? []).filter((m) => !onlyProject || !selectedProject || m.projectId === selectedProject || !m.projectId);
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -42,8 +46,37 @@ export function ChatPanel() {
     setText("");
   };
 
+  const onFiles = async (files: File[]) => {
+    if (!files.length || uploading) return;
+    setUploadErr("");
+    setUploading(true);
+    try {
+      const paths = await uploadChatFiles(files);
+      if (paths.length) {
+        const joined = paths.join(" ");
+        setText((prev) => (prev ? `${prev.trimEnd()} ${joined} ` : `${joined} `));
+        inputRef.current?.focus();
+      }
+    } catch (err) {
+      setUploadErr((err as Error).message || "Lỗi khi tải tệp");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div className="chat">
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          e.target.value = "";
+          if (files.length) void onFiles(files);
+        }}
+      />
       <label className="row small pad-x">
         <input type="checkbox" checked={onlyProject} onChange={(e) => setOnlyProject(e.target.checked)} /> Chỉ dự án đang chọn
       </label>
@@ -68,7 +101,17 @@ export function ChatPanel() {
         })}
         <div ref={endRef} />
       </div>
-      <div className="composer">
+      {uploadErr && <p className="warn small pad-x">{uploadErr}</p>}
+      <div
+        className="composer"
+        onPaste={(e) => {
+          const files = Array.from(e.clipboardData?.files ?? []);
+          if (files.length) {
+            e.preventDefault();
+            void onFiles(files);
+          }
+        }}
+      >
         <select value={to} onChange={(e) => setTo(e.target.value)}>
           <option value="">Gửi CEO</option>
           {state.employees.map((e) => (
@@ -77,7 +120,16 @@ export function ChatPanel() {
             </option>
           ))}
         </select>
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => fileRef.current?.click()}
+          title="Chọn một hoặc nhiều tệp/ảnh (hoặc Ctrl+V để dán)"
+        >
+          {uploading ? "…" : "Tệp"}
+        </button>
         <input
+          ref={inputRef}
           placeholder="Nhắn với tư cách Chủ tịch… (họ đọc ở lượt việc kế tiếp)"
           value={text}
           onChange={(e) => setText(e.target.value)}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { uploadChatFiles } from "@/api/http";
 import { useStore } from "@/store";
 import "./terminal.css";
 
@@ -236,38 +237,12 @@ export function Terminal({
   }, [touch, embedded]);
 
   if (!e) return null;
-  const safeHeaderName = (name: string) =>
-    name
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-zA-Z0-9._-]+/g, "_")
-      .replace(/^[._]+/, "")
-      .slice(-80);
   const uploadFiles = async (files: File[]) => {
     if (!files.length) return;
     setUploadErr("");
     setUploading(true);
-    const paths: string[] = [];
     try {
-      for (const file of files) {
-        const headers: Record<string, string> = {
-          "Content-Type": file.type || "application/octet-stream",
-        };
-        const fn = safeHeaderName(file.name || "");
-        if (fn) headers["X-Filename"] = fn;
-        const res = await fetch("/api/maintainer/upload", {
-          method: "POST",
-          headers,
-          body: file,
-        });
-        if (!res.ok) {
-          const msg = await res.text().catch(() => "");
-          setUploadErr(msg || `Không tải tệp ${file.name} lên được`);
-          break;
-        }
-        const data = (await res.json()) as { path?: string };
-        if (data.path) paths.push(data.path);
-      }
+      const paths = await uploadChatFiles(files);
       if (!paths.length) return;
       const joined = paths.join(" ");
       if (touch) {
@@ -277,8 +252,8 @@ export function Terminal({
         sendRef.current(`${joined} `);
         termRef.current?.focus();
       }
-    } catch {
-      setUploadErr("Lỗi mạng khi gửi tệp");
+    } catch (err) {
+      setUploadErr((err as Error).message || "Lỗi mạng khi gửi tệp");
     } finally {
       setUploading(false);
     }

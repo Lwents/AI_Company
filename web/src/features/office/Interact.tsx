@@ -1,6 +1,6 @@
 import { lazy, Suspense } from "react";
 import { useEffect, useRef, useState } from "react";
-import { api } from "@/api/http";
+import { api, uploadChatFiles } from "@/api/http";
 import { useStore } from "@/store";
 import { Markdown } from "@/shared/Markdown";
 import { ROLE_LABEL } from "@/shared/labels";
@@ -88,7 +88,9 @@ function PlainChat({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState("");
+  const [uploading, setUploading] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const e = state?.employees.find((x) => x.id === empId);
   const msgs = (state?.messages ?? [])
@@ -129,12 +131,47 @@ function PlainChat({
       inputRef.current?.focus();
     }
   };
+  const onFiles = async (files: File[]) => {
+    if (!files.length || uploading) return;
+    setErr("");
+    setUploading(true);
+    try {
+      const paths = await uploadChatFiles(files);
+      if (paths.length) {
+        const joined = paths.join(" ");
+        setText((prev) => (prev ? `${prev.trimEnd()} ${joined} ` : `${joined} `));
+        inputRef.current?.focus();
+      }
+    } catch (x) {
+      setErr((x as Error).message || "Lỗi khi tải tệp");
+    } finally {
+      setUploading(false);
+    }
+  };
   return (
     <div
       className={`office-chat${embedded ? " embedded" : ""}`}
       role="dialog"
       aria-label={`Chat với ${e.name}`}
+      onPaste={(ev) => {
+        const files = Array.from(ev.clipboardData?.files ?? []);
+        if (files.length) {
+          ev.preventDefault();
+          void onFiles(files);
+        }
+      }}
     >
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        hidden
+        onChange={(ev) => {
+          const files = Array.from(ev.target.files ?? []);
+          ev.target.value = "";
+          if (files.length) void onFiles(files);
+        }}
+      />
       <div className="row between oc-head">
         <b>
           💬 {e.name} · {ROLE_LABEL[e.role]}
@@ -163,6 +200,14 @@ function PlainChat({
       </div>
       {err && <p className="warn small">{err}</p>}
       <div className="row oc-input">
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => fileRef.current?.click()}
+          title="Chọn một hoặc nhiều tệp/ảnh (hoặc Ctrl+V để dán)"
+        >
+          {uploading ? "…" : "Tệp"}
+        </button>
         <textarea
           ref={inputRef}
           rows={2}
