@@ -74,11 +74,43 @@
 .term-close:hover {
   color: var(--t-ink);
 }
+html.term-lock,
+html.term-lock body {
+  overflow: hidden !important;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overscroll-behavior: none;
+}
+.term-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .term-host {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
   padding: 8px 4px 4px 10px;
+}
+.term-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 5;
+  background: #243248;
+  color: var(--t-ink);
+  border: 1px solid #4a6496;
+  border-radius: 99px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  font: inherit;
+  font-size: 12px;
+  min-height: 32px;
+  padding: 0 12px;
+  cursor: pointer;
 }
 .term-host .xterm {
   height: 100%;

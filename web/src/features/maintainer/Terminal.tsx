@@ -45,6 +45,10 @@ export function Terminal({
   const [line, setLine] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState("");
+  const [typing, setTyping] = useState(false);
+  const [scrolledUp, setScrolledUp] = useState(false);
+  const typingRef = useRef(false);
+  const stickRef = useRef(true);
   const touch =
     (typeof matchMedia === "function" &&
       matchMedia("(any-pointer: coarse)").matches) ||
@@ -80,16 +84,24 @@ export function Terminal({
       term.textarea.tabIndex = -1;
     }
     // Track whether the user wants to follow the latest output so streaming / redraws never drift upward.
-    let stickBottom = true;
+    stickRef.current = true;
     const isAtBottom = () =>
       term.buffer.active.viewportY >= term.buffer.active.baseY - 2;
-    const onScroll = term.onScroll(() => {
-      stickBottom = isAtBottom();
-    });
+    const syncScrollFlag = () => {
+      const atB = isAtBottom();
+      stickRef.current = atB;
+      setScrolledUp(!atB && term.buffer.active.baseY > 0);
+    };
+    const onScroll = term.onScroll(syncScrollFlag);
     const doFit = () => {
       try {
         fit.fit();
-        if (stickBottom) term.scrollToBottom();
+        if (stickRef.current) {
+          term.scrollToBottom();
+          requestAnimationFrame(() => {
+            if (stickRef.current) term.scrollToBottom();
+          });
+        }
       } catch {
         /* not laid out yet */
       }
@@ -110,14 +122,17 @@ export function Terminal({
     let retry: number | undefined;
     let fitTimer: number | undefined;
     const send = (data: string) => {
-      stickBottom = true;
+      stickRef.current = true;
+      setScrolledUp(false);
       if (ws?.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: "input", data }));
     };
     sendRef.current = send;
     // Only real size changes reach the CLI (each one makes it redraw everything).
+    // Skip PTY resize while the mobile keyboard is temporarily open so the CLI doesn't wipe & redraw.
     let sent = "";
     const sendSize = () => {
+      if (touch && typingRef.current) return;
       const size = `${term.cols}x${term.rows}`;
       if (size === sent || ws?.readyState !== WebSocket.OPEN) return;
       sent = size;
@@ -132,14 +147,16 @@ export function Terminal({
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         setStatus("on");
-        stickBottom = true;
+        stickRef.current = true;
+        setScrolledUp(false);
         term.reset();
         sent = "";
         sendSize();
       };
       ws.onmessage = (m) => {
         const afterWrite = () => {
-          if (stickBottom) term.scrollToBottom();
+          if (stickRef.current) term.scrollToBottom();
+          else syncScrollFlag();
         };
         if (typeof m.data === "string") term.write(m.data, afterWrite);
         else term.write(new Uint8Array(m.data as ArrayBuffer), afterWrite);
@@ -167,14 +184,19 @@ export function Terminal({
       }, 120);
     });
     ro.observe(host);
-    // Keep the mobile overlay locked to the visual viewport so opening the keyboard doesn't push it up.
-    const vv = !embedded && touch ? window.visualViewport : null;
+    // Lock the underlying page and pin the fullscreen mobile overlay to visualViewport via transform
+    // so opening the virtual keyboard never pushes the chat off-screen.
+    const lockPage = !embedded && touch;
+    if (lockPage) document.documentElement.classList.add("term-lock");
+    const vv = lockPage ? window.visualViewport : null;
     const syncViewport = () => {
       const box = dialogRef.current;
       if (!vv || !box) return;
       box.style.height = `${Math.round(vv.height)}px`;
-      box.style.top = `${Math.round(vv.offsetTop)}px`;
-      if (window.scrollY !== 0) window.scrollTo(0, 0);
+      box.style.transform = `translate3d(0, ${Math.round(vv.offsetTop)}px, 0)`;
+      if (stickRef.current) {
+        requestAnimationFrame(() => term.scrollToBottom());
+      }
     };
     if (vv) {
       syncViewport();
@@ -186,6 +208,7 @@ export function Terminal({
       closed = true;
       window.clearTimeout(retry);
       window.clearTimeout(fitTimer);
+      if (lockPage) document.documentElement.classList.remove("term-lock");
       if (vv) {
         vv.removeEventListener("resize", syncViewport);
         vv.removeEventListener("scroll", syncViewport);
@@ -303,41 +326,64 @@ export function Terminal({
           ✕
         </button>
       </div>
-      <div
-        className="term-host"
-        ref={hostRef}
-        onClick={() => {
-          if (!touch) termRef.current?.focus();
-        }}
-      />
-      <div className="term-keys">
-        <button
-          type="button"
-          onPointerDown={(ev) => ev.preventDefault()}
-          onClick={() => termRef.current?.scrollToBottom()}
-          title="Cuộn xuống cuối đoạn chat"
-        >
-          ↓ Cuối
-        </button>
-        {KEYS.map(([label, seq]) => (
+      <div className="term-stage">
+        <div
+          className="term-host"
+          ref={hostRef}
+          onClick={() => {
+            if (!touch) termRef.current?.focus();
+          }}
+        />
+        {scrolledUp && (
           <button
-            key={label}
+            type="button"
+            className="term-jump"
             onPointerDown={(ev) => ev.preventDefault()}
             onClick={() => {
-              sendRef.current(seq);
-              if (!touch) termRef.current?.focus();
+              stickRef.current = true;
+              setScrolledUp(false);
+              termRef.current?.scrollToBottom();
             }}
           >
-            {label}
+            ↓ Xuống cuối
           </button>
-        ))}
+        )}
       </div>
+      {!(touch && typing) && (
+        <div className="term-keys">
+          <button
+            type="button"
+            onPointerDown={(ev) => ev.preventDefault()}
+            onClick={() => {
+              stickRef.current = true;
+              setScrolledUp(false);
+              termRef.current?.scrollToBottom();
+            }}
+            title="Cuộn xuống cuối đoạn chat"
+          >
+            ↓ Cuối
+          </button>
+          {KEYS.map(([label, seq]) => (
+            <button
+              key={label}
+              onPointerDown={(ev) => ev.preventDefault()}
+              onClick={() => {
+                sendRef.current(seq);
+                if (!touch) termRef.current?.focus();
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {touch && (
         <div className="term-line">
           <button
             type="button"
             className="t-img"
             disabled={uploading}
+            onPointerDown={(ev) => ev.preventDefault()}
             onClick={() => fileRef.current?.click()}
             aria-label="Gửi ảnh"
             title="Chọn ảnh gửi vào đoạn chat"
@@ -348,6 +394,17 @@ export function Terminal({
             ref={inputRef}
             value={line}
             placeholder="Gõ tin nhắn (có dấu) rồi Gửi"
+            onFocus={() => {
+              typingRef.current = true;
+              setTyping(true);
+              stickRef.current = true;
+              setScrolledUp(false);
+              window.setTimeout(() => termRef.current?.scrollToBottom(), 180);
+            }}
+            onBlur={() => {
+              typingRef.current = false;
+              setTyping(false);
+            }}
             onChange={(ev) => setLine(ev.target.value)}
             onKeyDown={(ev) => {
               if (ev.key === "Enter" && !ev.nativeEvent.isComposing) {
@@ -356,7 +413,9 @@ export function Terminal({
               }
             }}
           />
-          <button onClick={sendLine}>Gửi</button>
+          <button onPointerDown={(ev) => ev.preventDefault()} onClick={sendLine}>
+            Gửi
+          </button>
         </div>
       )}
     </div>
