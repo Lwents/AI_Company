@@ -7,7 +7,7 @@
 //!
 //! The process scales with the project's size (`Project.mode`), like a real company:
 //! - "fast" (S): one engineer builds it, an automatic browser check, a Tester tries it.
-//! - "standard" (M): ~7 people; CEO plan without a vote, short requirements, 2 design options, short
+//! - "standard" (M): ~7 people; CEO plan without a vote, short requirements, design options, short
 //!   architecture, Dev ⇄ Reviewer ⇄ Tester per ticket, ONE final QA, the browser gate, the report.
 //! - "full" (L): everything above plus the debate and vote, sprint planning, constitution, data design,
 //!   consistency analysis, design / security / DevOps reviews, specification, minutes and retrospective.
@@ -929,14 +929,10 @@ const DESIGN_DELIVERABLES: &str = "- docs/DESIGN.md: phong cách, hệ màu (mã
 const DESIGN_OPTION_IDS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
 /// Design directions offered for a project: its own number (set from chat), else the company setting.
-/// The company setting is capped by size (medium 2, big 3: each option is a full design job); a number the
-/// chairman set for this project is used as is.
+/// Design directions offered for a project: its own number (set from chat), else the company setting.
 pub fn design_option_count(store: &S, p: &Project) -> usize {
-    if p.design_options > 0 {
-        return (p.design_options as usize).clamp(1, DESIGN_OPTION_IDS.len());
-    }
-    let cap = if is_standard(p) { 2 } else { 3 };
-    (store.with(|s| s.settings.design_options) as usize).clamp(1, cap)
+    let n = if p.design_options > 0 { p.design_options } else { store.with(|s| s.settings.design_options) };
+    (n as usize).clamp(1, DESIGN_OPTION_IDS.len())
 }
 
 pub fn set_design_options(store: &S, project_id: Option<&str>, n: u8) {
