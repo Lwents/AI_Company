@@ -196,12 +196,34 @@ pub fn cli_env(name: &str) -> Vec<(String, Option<String>)> {
     if let Ok(url) = std::env::var("AICO_CLAUDE_BASE_URL") {
         set("ANTHROPIC_BASE_URL", url);
         if let Ok(key) = std::env::var("AICO_CLAUDE_KEY").or_else(|_| std::env::var("CUSTOM_API_KEY")) {
-            set("ANTHROPIC_API_KEY", key);
+            // A bearer token: the CLI uses it without asking "use this API key?" and ignores any Claude login.
+            set("ANTHROPIC_AUTH_TOKEN", key);
         }
     }
-    if let Ok(m) = std::env::var("AICO_CLAUDE_SMALL_MODEL") {
-        set("ANTHROPIC_DEFAULT_HAIKU_MODEL", m.clone());
-        set("ANTHROPIC_SMALL_FAST_MODEL", m);
+    // The /model picker lists the company's own models (through the proxy) instead of Claude's.
+    let pick = |var: &str| std::env::var(var).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let main = pick("AICO_CLAUDE_MODEL");
+    let mid = pick("AICO_CLAUDE_MID_MODEL").or_else(|| main.clone());
+    let small = pick("AICO_CLAUDE_SMALL_MODEL").or_else(|| mid.clone());
+    // The same main model thinking harder: "…(medium)" → "…(high)".
+    let deep = main.as_ref().map(|m| match m.rfind('(') {
+        Some(i) => format!("{}(high)", &m[..i]),
+        None => format!("{m}(high)"),
+    });
+    for (slot, model, note) in [
+        ("OPUS", &main, "Mạnh nhất · model của CEO, BA, PM, Tech Lead trong dự án"),
+        ("FABLE", &deep, "Neon nghĩ sâu hơn · cho việc khó nhất (chậm hơn)"),
+        ("SONNET", &mid, "Cân bằng tốc độ / chất lượng"),
+        ("HAIKU", &small, "Nhanh, rẻ · model của Dev, Tester… (proxy miễn phí, có lúc hết lượt)"),
+    ] {
+        if let Some(m) = model {
+            set(&format!("ANTHROPIC_DEFAULT_{slot}_MODEL"), m.clone());
+            set(&format!("ANTHROPIC_DEFAULT_{slot}_MODEL_NAME"), model_name(m));
+            set(&format!("ANTHROPIC_DEFAULT_{slot}_MODEL_DESCRIPTION"), note.to_string());
+        }
+    }
+    if let Some(m) = &small {
+        set("ANTHROPIC_SMALL_FAST_MODEL", m.clone());
     }
     set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1".into());
     // The server CPU lacks SSE4.2; newer (native) Claude CLI builds won't run there, so never auto-update.
@@ -218,6 +240,24 @@ pub fn cli_env(name: &str) -> Vec<(String, Option<String>)> {
         }
     }
     v
+}
+
+/// "ag/gemini-4-neon-xhigh(medium)" → "Gemini 4 Neon xhigh (medium)"; "oc/deepseek-v4.1-flash-free" → "DeepSeek v4.1 flash".
+fn model_name(id: &str) -> String {
+    let base = id.rsplit('/').next().unwrap_or(id).replace('(', " (");
+    base.split('-')
+        .filter(|w| *w != "free")
+        .map(|w| match w {
+            "gemini" => "Gemini".to_string(),
+            "deepseek" => "DeepSeek".to_string(),
+            "neon" | "carbon" | "argon" | "hydrogen" => {
+                let mut c = w.chars();
+                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            }
+            other => other.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn command(dir: &Path, text: &str, session: Option<&str>, emp: &Employee) -> tokio::process::Command {
@@ -377,5 +417,7 @@ mod tests {
 b" }] })), "a
 b");
         assert!(rules(Path::new("/opt/src")).contains("git push origin main"));
+        assert_eq!(model_name("ag/gemini-4-neon-xhigh(medium)"), "Gemini 4 Neon xhigh (medium)");
+        assert_eq!(model_name("oc/deepseek-v4.1-flash-free"), "DeepSeek v4.1 flash");
     }
 }
