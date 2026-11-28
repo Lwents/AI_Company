@@ -105,8 +105,8 @@ export function ProjectsPanel() {
             {(
               [
                 ["fast", "⚡ Nhỏ", "Một kỹ sư giỏi làm liền một mạch, máy tự kiểm tra rồi Tester dùng thử — trang web nhỏ, landing page, công cụ, game đơn giản (~15–30 phút)"],
-                ["standard", "👥 Vừa", "Nhóm ~7 người: kế hoạch, yêu cầu ngắn, mẫu thiết kế theo Cài đặt, review + test từng ticket, một lần kiểm định cuối — web có đăng nhập, vài màn hình quản lý (~2–3 giờ)"],
-                ["full", "🏢 Lớn", "Cả công ty: họp bỏ phiếu, đặc tả, nhiều mẫu thiết kế, kiến trúc, bảo mật, DevOps, kiểm định nhiều vòng — hệ thống lớn"],
+                ["standard", "👥 Vừa", "Nhóm ~7 người: kế hoạch, yêu cầu ngắn, 2 mẫu thiết kế, review + test từng ticket, một lần kiểm định cuối — web có đăng nhập, vài màn hình quản lý (~2–3 giờ)"],
+                ["full", "🏢 Lớn", "Cả công ty: họp bỏ phiếu, đặc tả, số mẫu thiết kế theo Cài đặt, kiến trúc, bảo mật, DevOps, kiểm định nhiều vòng — hệ thống lớn"],
               ] as const
             ).map(([v, l, tip]) => (
               <button key={v} type="button" role="radio" title={tip} aria-checked={mode === v} className={mode === v ? "primary" : "ghost"} onClick={() => setMode(v)}>

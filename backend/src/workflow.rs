@@ -929,9 +929,16 @@ const DESIGN_DELIVERABLES: &str = "- docs/DESIGN.md: phong cách, hệ màu (mã
 const DESIGN_OPTION_IDS: [&str; 8] = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
 /// Design directions offered for a project: its own number (set from chat), else the company setting.
-/// Design directions offered for a project: its own number (set from chat), else the company setting.
+/// Design directions offered for a project: its own number (set from chat); else 2 on a medium project,
+/// the company setting on a big one.
 pub fn design_option_count(store: &S, p: &Project) -> usize {
-    let n = if p.design_options > 0 { p.design_options } else { store.with(|s| s.settings.design_options) };
+    let n = if p.design_options > 0 {
+        p.design_options
+    } else if is_standard(p) {
+        2
+    } else {
+        store.with(|s| s.settings.design_options)
+    };
     (n as usize).clamp(1, DESIGN_OPTION_IDS.len())
 }
 
