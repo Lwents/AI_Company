@@ -3,8 +3,10 @@
 //! Enabled only when both AUTH_USER and AUTH_PASSWORD_HASH are set (create the hash with
 //! `ai-company hash-password`). On a local machine without them nothing changes.
 //!
-//! - Sessions: random 256-bit tokens in an HttpOnly + Secure + SameSite=Strict cookie,
-//!   kept in memory only (not on disk, where agent-run code could read them). 7 days.
+//! - Sessions: random 256-bit tokens in an HttpOnly + Secure + SameSite=Strict cookie, 7 days.
+//!   Only a BLAKE2 hash of each token is kept (in memory and in data/sessions.json), so logins
+//!   survive restarts / deploys while code run by agents, which can read the disk, still cannot
+//!   recover a usable cookie from it.
 //! - Brute force: 5 failures per IP → locked 15 min; 30 failures overall → everyone locked 15 min.
 //! - CSRF / cross-site WebSocket: every state-changing request and every WebSocket upgrade must
 //!   carry an Origin equal to the page's own origin (a project preview on another origin cannot).
@@ -32,7 +34,7 @@ struct Auth {
     user: String,
     hash: String,
     secure_cookie: bool,
-    /// token → expiry (ms)
+    /// hash of the token → expiry (ms)
     sessions: Mutex<HashMap<String, u64>>,
     /// ip → (failures, first failure ms)
     fails: Mutex<HashMap<String, (u32, u64)>>,
@@ -54,9 +56,34 @@ pub fn init() -> bool {
             std::process::exit(1);
         }
         let secure_cookie = std::env::var("AUTH_COOKIE_SECURE").map(|v| v != "0").unwrap_or(true);
-        Some(Auth { user, hash, secure_cookie, sessions: Mutex::new(HashMap::new()), fails: Mutex::new(HashMap::new()) })
+        Some(Auth { user, hash, secure_cookie, sessions: Mutex::new(load_sessions()), fails: Mutex::new(HashMap::new()) })
     });
     a.is_some()
+}
+
+fn sessions_file() -> std::path::PathBuf {
+    let root = std::env::var("AI_COMPANY_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    root.join("data").join("sessions.json")
+}
+
+fn load_sessions() -> HashMap<String, u64> {
+    let t = now();
+    let m: HashMap<String, u64> = std::fs::read_to_string(sessions_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    m.into_iter().filter(|(_, exp)| *exp > t).collect()
+}
+
+fn save_sessions(m: &HashMap<String, u64>) {
+    let p = sessions_file();
+    let tmp = p.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(m).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &p);
+    }
+}
+
+/// What is stored for a token: never the token itself.
+fn token_hash(tok: &str) -> String {
+    use blake2::{Blake2b512, Digest};
+    Blake2b512::digest(tok.as_bytes()).iter().take(32).map(|b| format!("{b:02x}")).collect()
 }
 
 fn auth() -> Option<&'static Auth> {
@@ -98,10 +125,11 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 
 fn session_ok(a: &Auth, headers: &HeaderMap) -> bool {
     let Some(tok) = cookie_value(headers, COOKIE) else { return false };
+    let h = token_hash(&tok);
     let mut s = a.sessions.lock().unwrap();
     let t = now();
     s.retain(|_, exp| *exp > t);
-    s.keys().any(|k| ct_eq(k.as_bytes(), tok.as_bytes()))
+    s.keys().any(|k| ct_eq(k.as_bytes(), h.as_bytes()))
 }
 
 /// The client address as seen by nginx (X-Real-IP), or "direct" for local callers.
@@ -201,7 +229,12 @@ pub async fn login(headers: HeaderMap, Json(b): Json<LoginBody>) -> Response {
     }
     a.fails.lock().unwrap().remove(&ip);
     let token: String = random_bytes::<32>().iter().map(|b| format!("{b:02x}")).collect();
-    a.sessions.lock().unwrap().insert(token.clone(), t + SESSION_MS);
+    {
+        let mut s = a.sessions.lock().unwrap();
+        s.retain(|_, exp| *exp > t);
+        s.insert(token_hash(&token), t + SESSION_MS);
+        save_sessions(&s);
+    }
     let cookie = format!(
         "{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
         SESSION_MS / 1000,
@@ -212,7 +245,9 @@ pub async fn login(headers: HeaderMap, Json(b): Json<LoginBody>) -> Response {
 
 pub async fn logout(headers: HeaderMap) -> Response {
     if let (Some(a), Some(tok)) = (auth(), cookie_value(&headers, COOKIE)) {
-        a.sessions.lock().unwrap().remove(&tok);
+        let mut s = a.sessions.lock().unwrap();
+        s.remove(&token_hash(&tok));
+        save_sessions(&s);
     }
     let cookie = format!("{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
     ([(header::SET_COOKIE, cookie)], Json(json!({ "ok": true }))).into_response()
@@ -282,6 +317,14 @@ mod tests {
         assert!(check(&a, "u", "Bí mật@1"));
         assert!(!check(&a, "u", "sai"));
         assert!(!check(&a, "x", "Bí mật@1"));
+    }
+
+    #[test]
+    fn stored_session_is_not_the_token() {
+        let h = token_hash("abc");
+        assert_eq!(h.len(), 64);
+        assert_ne!(h, "abc");
+        assert_eq!(h, token_hash("abc"));
     }
 
     #[test]

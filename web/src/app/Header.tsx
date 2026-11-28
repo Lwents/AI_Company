@@ -67,15 +67,41 @@ export function Header() {
 /** After a few seconds without the server (restart, deploy, crash): point to the rescue page, a separate service. */
 function DownBanner({ connected }: { connected: boolean }) {
   const [long, setLong] = useState(false);
+  const [loggedOut, setLoggedOut] = useState(false);
   useEffect(() => {
     if (connected) {
       setLong(false);
+      setLoggedOut(false);
       return;
     }
     const t = setTimeout(() => setLong(true), 8000);
     return () => clearTimeout(t);
   }, [connected]);
+  // The server answers but no longer knows this login (expired session): say so instead of "disconnected".
+  useEffect(() => {
+    if (!long) return;
+    const check = () =>
+      fetch("/api/auth/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((s: { enabled?: boolean; user?: string | null } | null) =>
+          setLoggedOut(!!s?.enabled && !s.user),
+        )
+        .catch(() => setLoggedOut(false));
+    void check();
+    const t = setInterval(check, 10000);
+    return () => clearInterval(t);
+  }, [long]);
   if (!long) return null;
+  if (loggedOut) {
+    return (
+      <div className="down-banner" role="alert">
+        🔑 Phiên đăng nhập đã hết.{" "}
+        <a href={`/login?next=${encodeURIComponent(location.pathname)}`}>
+          Đăng nhập lại
+        </a>
+      </div>
+    );
+  }
   return (
     <div className="down-banner" role="alert">
       ⏳ Mất kết nối với máy chủ (đang khởi động lại, đang cập nhật hoặc gặp sự

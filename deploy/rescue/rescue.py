@@ -25,7 +25,6 @@ from http import cookies
 
 try:
     from argon2 import PasswordHasher
-    from argon2.exceptions import VerifyMismatchError, InvalidHashError
 except ImportError:  # pragma: no cover
     PasswordHasher = None
 
@@ -79,7 +78,7 @@ def check_password(user, pw):
         return False
     try:
         return PasswordHasher().verify(hashed, pw)
-    except (VerifyMismatchError, InvalidHashError, Exception):  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — wrong password or bad hash (exception names differ across argon2 versions)
         return False
 
 
