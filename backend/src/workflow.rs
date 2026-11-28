@@ -188,7 +188,15 @@ pub fn start(store: &S, pid: &str) {
     tokio::spawn(async move {
         // Workflow steps pick their people from this project's team.
         let r = CURRENT_PROJECT.scope(pid.clone(), run_project(&store, &pid, &token)).await;
-        store.cancels.lock().unwrap().remove(&pid);
+        let replaced = {
+            let mut cancels = store.cancels.lock().unwrap();
+            if !token.is_cancelled() || cancels.get(&pid).is_some_and(CancellationToken::is_cancelled) {
+                cancels.remove(&pid);
+                false
+            } else {
+                cancels.contains_key(&pid)
+            }
+        };
         match r {
             Err(e) if e != ABORTED && !token.is_cancelled() => {
                 let max = store.with(|s| s.settings.auto_retries);
@@ -213,13 +221,15 @@ pub fn start(store: &S, pid: &str) {
             }
             _ => {}
         }
-        let ids: Vec<String> = store.with(|s| {
-            s.runtime.iter().filter(|(_, r)| r.project_id.as_deref() == Some(&pid)).map(|(k, _)| k.clone()).collect()
-        });
-        for id in ids {
-            store.set_runtime(&id, EmpStatus::Idle, "", None, None);
+        if !replaced {
+            let ids: Vec<String> = store.with(|s| {
+                s.runtime.iter().filter(|(_, r)| r.project_id.as_deref() == Some(&pid)).map(|(k, _)| k.clone()).collect()
+            });
+            for id in ids {
+                store.set_runtime(&id, EmpStatus::Idle, "", None, None);
+            }
+            meeting(&store, &pid, vec![], "", false);
         }
-        meeting(&store, &pid, vec![], "", false);
     });
 }
 
@@ -1030,14 +1040,16 @@ pub fn draft_project(store: &S, name: &str, request: &str) -> Project {
     p
 }
 
-/// The chairman asks for changes (project finished, paused or stopped): a new revision round from the kickoff.
+/// The chairman asks for changes (even while running: halts the current round and opens a new revision round).
 pub fn request_changes(store: &S, id: &str, feedback: &str) -> Result<(), String> {
     store.project(id).ok_or("Dự án không tồn tại")?;
-    if store.cancels.lock().unwrap().contains_key(id) {
-        return Err("dự án đang chạy (tạm dừng dự án rồi nhắn lại để mở vòng sửa đổi); yêu cầu đã được gửi tới người đang làm".into());
+    let was_running = store.cancels.lock().unwrap().contains_key(id);
+    if was_running {
+        halt(store, id, ProjectStatus::Paused);
+    } else {
+        // A live product keeps its customers; operations pause while the team builds the new version.
+        store.stop_ops(id);
     }
-    // A live product keeps its customers; operations pause while the team builds the new version.
-    store.stop_ops(id);
     store.update_project(id, |p| {
         p.feedback.push(feedback.trim().to_string());
         p.phase = Phase::Plan;
@@ -1048,7 +1060,27 @@ pub fn request_changes(store: &S, id: &str, feedback: &str) -> Result<(), String
         p.qa_rounds = 0;
         p.security_reviews = 0;
     });
-    start(store, id);
+    if was_running {
+        let store = store.clone();
+        let pid = id.to_string();
+        tokio::spawn(async move {
+            for _ in 0..100 {
+                if !store.cancels.lock().unwrap().contains_key(&pid) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            {
+                let mut cancels = store.cancels.lock().unwrap();
+                if cancels.get(&pid).is_some_and(CancellationToken::is_cancelled) {
+                    cancels.remove(&pid);
+                }
+            }
+            start(&store, &pid);
+        });
+    } else {
+        start(store, id);
+    }
     Ok(())
 }
 

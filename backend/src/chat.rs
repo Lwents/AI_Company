@@ -29,11 +29,11 @@ fn reply_tool() -> ToolDef {
                 "text": { "type": "string", "description": "Câu trả lời gửi Chủ tịch: tiếng Việt, ngắn gọn, đúng vai của bạn; nói rõ bạn sẽ làm gì / đã làm gì." },
                 "autopilot": { "type": "string", "enum": ["none", "on", "off"], "description": "Mặc định none. on: CHỈ khi Chủ tịch nói rõ giao cho đội TỰ QUYẾT / không cần duyệt nữa; off: CHỈ khi Chủ tịch nói rõ muốn duyệt lại; none: mọi trường hợp khác." },
                 "design_options": { "type": "integer", "description": "Số phương án / mẫu thiết kế Chủ tịch muốn được xem để chọn (1–8). 0 = không nhắc tới." },
-                "task": { "type": "string", "description": "CHỈ khi Chủ tịch GIAO VIỆC cụ thể và đã RÕ (viết, sửa, thiết kế, kiểm tra…): mô tả đầy đủ việc cần làm và kết quả mong muốn; bạn bắt đầu làm ngay. Nếu bạn còn hỏi lại / xin xác nhận / đưa phương án cho Chủ tịch chọn thì BỎ TRỐNG (chờ Chủ tịch trả lời rồi mới nhận việc)." },
+                "task": { "type": "string", "description": "CHỈ khi Chủ tịch giao MỘT VIỆC LẺ để CHÍNH BẠN tự làm (viết, kiểm tra, phác thảo…): mô tả đầy đủ việc cần làm và kết quả mong muốn. KHÔNG dùng tham số này để giao việc cho cả đội hay làm lại/sửa dự án (hãy dùng change_request và để trống task). Nếu còn hỏi lại / xin xác nhận thì BỎ TRỐNG." },
                 "task_project": { "type": "string", "description": "Việc làm ở đâu: mã dự án trong danh sách dự án của công ty; \"new\" nếu việc thuộc một sản phẩm KHÁC chưa có dự án (vd. đang ở dự án đồng hồ mà Chủ tịch bảo thiết kế web cờ vua) — hệ thống tạo dự án nháp riêng; bỏ trống = dự án đang chọn." },
                 "new_project_name": { "type": "string", "description": "Tên ngắn cho dự án nháp khi task_project là \"new\" (vd. \"Web cờ vua\")." },
                 "choose_design": { "type": "string", "description": "CHỈ khi đang chờ Chủ tịch chọn phương án thiết kế và Chủ tịch nói chọn phương án nào: chữ cái của phương án (a, b, c…), kèm góp ý nếu có, ví dụ \"b: chữ to hơn\". Bỏ trống nếu không." },
-                "change_request": { "type": "string", "description": "CHỈ khi Chủ tịch yêu cầu sửa / thêm / làm lại cho dự án (đã xong, đang chờ duyệt hoặc đang tạm dừng): mô tả đầy đủ yêu cầu thay đổi để cả đội làm vòng sửa đổi. Bỏ trống nếu không." },
+                "change_request": { "type": "string", "description": "CHỈ khi Chủ tịch yêu cầu sửa / thêm / làm lại / đổi hướng cho dự án (kể cả khi dự án đang chạy — hệ thống sẽ tự dừng vòng cũ và mở vòng sửa đổi mới cho cả đội): mô tả đầy đủ yêu cầu thay đổi. Bỏ trống nếu không." },
                 "work_mode": { "type": "string", "enum": ["none", "fast", "standard", "full"], "description": "Mặc định none. Cỡ dự án / cách làm, CHỈ đổi khi Chủ tịch yêu cầu: fast = làm NHANH (một kỹ sư làm liền), standard = cỡ VỪA (nhóm ~7 người, tài liệu ngắn), full = ĐỦ QUY TRÌNH công ty (dự án lớn)." },
                 "resend_designs": { "type": "boolean", "description": "true khi Chủ tịch muốn XEM LẠI các mẫu / phương án thiết kế đã làm (kèm ảnh): hệ thống mở lại thẻ chọn mẫu ở tab Duyệt." },
                 "set_team": { "type": "array", "items": { "type": "string" }, "description": "CHỈ khi Chủ tịch bảo đổi / rút gọn / thêm người trong NHÓM LÀM DỰ ÁN này: danh sách TÊN nhân viên của nhóm mới (đúng tên trong danh sách nhân viên). Bỏ trống nếu không." }
@@ -238,27 +238,31 @@ Khi nhận việc (task) bạn làm thật bằng công cụ: đọc / ghi tệp
 /// Carries out the orders the employee recognised; returns what was done (shown to the chairman).
 fn apply(store: &S, emp: &Employee, project_id: Option<&str>, input: &Value, said: &str) -> Vec<String> {
     let mut done = vec![];
+    let has_change = project_id.is_some() && input.get("change_request").and_then(Value::as_str).map(str::trim).is_some_and(|s| !s.is_empty());
     if let Some(task) = input.get("task").and_then(Value::as_str).map(str::trim).filter(|t| t.chars().count() > 3) {
         let target = input.get("task_project").and_then(Value::as_str).map(str::trim).unwrap_or_default();
-        let picked = if target == "new" {
-            let name = input.get("new_project_name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Việc riêng của Chủ tịch");
-            let p = crate::workflow::draft_project(store, name, task);
-            done.push(format!("🗂 Đã tạo dự án nháp \"{}\" (đang tạm dừng) để làm riêng việc này; muốn làm thành sản phẩm đầy đủ thì bấm Tiếp tục ở tab Dự án.", p.name));
-            Some(p)
-        } else if !target.is_empty() {
-            store.project(target).or_else(|| project_id.and_then(|id| store.project(id)))
-        } else {
-            project_id.and_then(|id| store.project(id))
-        };
-        match picked {
-            None => done.push("ℹ️ Anh/chị chọn một dự án (tab Dự án) rồi giao lại, để em biết làm trong thư mục nào.".into()),
-            Some(p) => {
-                let busy = store.with(|s| s.runtime.get(&emp.id).filter(|r| r.status != EmpStatus::Idle && r.note != "Đang trả lời Chủ tịch").map(|r| r.note.clone()));
-                spawn_task(store, emp, &p.id, task);
-                done.push(match busy {
-                    Some(note) => format!("📝 Đã nhận việc. Em đang bận ({note}), xong việc đó em làm ngay và báo lại."),
-                    None => "📝 Đã nhận việc, em bắt đầu làm ngay và sẽ báo lại khi xong.".into(),
-                });
+        let same_project = target.is_empty() || project_id == Some(target);
+        if !(has_change && same_project) {
+            let picked = if target == "new" {
+                let name = input.get("new_project_name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Việc riêng của Chủ tịch");
+                let p = crate::workflow::draft_project(store, name, task);
+                done.push(format!("🗂 Đã tạo dự án nháp \"{}\" (đang tạm dừng) để làm riêng việc này; muốn làm thành sản phẩm đầy đủ thì bấm Tiếp tục ở tab Dự án.", p.name));
+                Some(p)
+            } else if !target.is_empty() {
+                store.project(target).or_else(|| project_id.and_then(|id| store.project(id)))
+            } else {
+                project_id.and_then(|id| store.project(id))
+            };
+            match picked {
+                None => done.push("ℹ️ Anh/chị chọn một dự án (tab Dự án) rồi giao lại, để em biết làm trong thư mục nào.".into()),
+                Some(p) => {
+                    let busy = store.with(|s| s.runtime.get(&emp.id).filter(|r| r.status != EmpStatus::Idle && r.note != "Đang trả lời Chủ tịch").map(|r| r.note.clone()));
+                    spawn_task(store, emp, &p.id, task);
+                    done.push(match busy {
+                        Some(note) => format!("📝 Đã nhận việc. Em đang bận ({note}), xong việc đó em làm ngay và báo lại."),
+                        None => "📝 Đã nhận việc, em bắt đầu làm ngay và sẽ báo lại khi xong.".into(),
+                    });
+                }
             }
         }
     }
@@ -285,7 +289,7 @@ fn apply(store: &S, emp: &Employee, project_id: Option<&str>, input: &Value, sai
                 "ℹ️ Dự án này đã làm xong nên chưa làm lại thiết kế được. Đã ghi {n} mẫu cho lần thiết kế tiếp theo: anh/chị nhắn yêu cầu sửa (ví dụ \"làm lại giao diện\") là đội mở vòng sửa đổi và Designer gửi {n} mẫu để chọn."
             ),
             Some(_) => format!(
-                "ℹ️ Dự án này đã qua bước thiết kế (đang làm bước sau) nên Designer chưa làm mẫu mới ngay. Đã ghi {n} mẫu: các dự án mới và vòng sửa đổi sau sẽ có {n} mẫu để chọn. Muốn làm lại giao diện ngay: tạm dừng dự án rồi nhắn yêu cầu sửa."
+                "ℹ️ Dự án này đã qua bước thiết kế (đang làm bước sau) nên Designer chưa làm mẫu mới ngay. Đã ghi {n} mẫu: các dự án mới và vòng sửa đổi sau sẽ có {n} mẫu để chọn. Muốn làm lại giao diện ngay: nhắn yêu cầu sửa (ví dụ \"làm lại giao diện\")."
             ),
         });
     }
