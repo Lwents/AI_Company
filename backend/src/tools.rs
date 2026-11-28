@@ -906,9 +906,13 @@ fn is_dangerous(cmd: &str) -> bool {
         "iwr ", "curl ", "wget ", "c:\\windows", "%userprofile%", "%appdata%", "..\\", "../",
         "git reset --hard", "git clean -f", "git clean -df", "git clean -fd", "git checkout --", "git checkout -f",
         "git restore ", "git push",
+        // Mass kills: on the server every employee runs as the same user as AI Company itself.
+        "killall", "pkill -u", "pkill -9 -u", "kill -1 ", "kill -9 -1", "kill -kill -", "kill -9 -", "kill -s kill -1", "kill -- -1",
     ]
     .iter()
     .any(|p| c.contains(p))
+        || c.trim_end().ends_with("kill -1")
+        || c.contains("pkill") && (c.contains("ai-company") || c.contains("rescue") || c.contains("python") || c.contains("node"))
 }
 
 /// Commands that run without asking when auto-approve is off.
@@ -938,8 +942,8 @@ async fn kill_process_tree(child: &mut tokio::process::Child) {
         let _ = tokio::time::timeout(Duration::from_secs(5), tk.status()).await;
     }
     #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        let _ = tokio::process::Command::new("kill").args(["-KILL", &format!("-{pid}")]).status().await;
+    if let Some(pid) = child.id().filter(|p| *p > 1) {
+        let _ = tokio::process::Command::new("kill").args(crate::mcp::kill_group_args(pid)).status().await;
     }
     let _ = child.kill().await;
 }
@@ -1191,5 +1195,21 @@ mod tests {
         assert_eq!(n2, 2);
         assert_eq!(out2, "x\nb\nx\n");
         assert!(apply_edit(dup, "missing", "x", false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod kill_guard_tests {
+    use super::is_dangerous;
+
+    #[test]
+    fn refuses_mass_kills() {
+        for c in ["kill -1", "kill -9 -1", "kill -KILL -1234", "killall node", "pkill -u aico", "pkill -f node", "pkill python"] {
+            assert!(is_dangerous(c), "{c}");
+        }
+        for c in ["kill 1234", "kill -9 1234", "kill -15 1234", "kill %1", "pkill -f vite"] {
+            assert!(!is_dangerous(c), "{c}");
+        }
+        assert_eq!(crate::mcp::kill_group_args(42), ["-s", "KILL", "--", "-42"]);
     }
 }

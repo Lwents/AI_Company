@@ -331,6 +331,13 @@ impl Session {
 
 }
 
+/// `kill` arguments that stop the process group `pgid` and nothing else. NEVER `kill -KILL -<pgid>`:
+/// procps-ng 4.0.4 (Ubuntu 24.04) reads that as `kill -KILL -1` and kills EVERY process of the user —
+/// on the server that took down AI Company itself, the rescue page and other services every few minutes.
+pub(crate) fn kill_group_args(pgid: u32) -> [String; 4] {
+    ["-s".into(), "KILL".into(), "--".into(), format!("-{pgid}")]
+}
+
 impl Drop for Session {
     /// Stops the servers and everything they started (npx → node → browser).
     fn drop(&mut self) {
@@ -339,7 +346,9 @@ impl Drop for Session {
                 if cfg!(windows) {
                     let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status();
                 } else {
-                    let _ = std::process::Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                    if pid > 1 {
+                        let _ = std::process::Command::new("kill").args(kill_group_args(pid)).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                    }
                 }
             }
             let _ = c.child.start_kill();
