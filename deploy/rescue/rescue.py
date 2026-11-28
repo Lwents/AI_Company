@@ -318,7 +318,13 @@ class PtySession:
                 break
             with self.lock:
                 self.last = time.time()
-                self.backlog += data
+                # A full redraw (erase screen) makes everything before it obsolete: a browser that attaches
+                # later replays only the current picture, not every earlier copy of the transcript.
+                cut = data.rfind(b"[2J")
+                if cut >= 0:
+                    self.backlog = bytearray(data[cut:])
+                else:
+                    self.backlog += data
                 if len(self.backlog) > BACKLOG:
                     del self.backlog[: len(self.backlog) - BACKLOG]
                 for q in list(self.clients):

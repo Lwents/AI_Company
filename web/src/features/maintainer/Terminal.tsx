@@ -74,6 +74,13 @@ export function Terminal({
       }
     };
     doFit();
+    // The CLI redraws its whole screen with "erase screen" (ESC[2J) — on resize, /clear, long answers. xterm
+    // keeps the old picture in the scrollback, so scrolling up showed the same transcript several times.
+    // Drop the scrollback before each full redraw, like a native terminal running the CLI does.
+    const eraseHook = term.parser.registerCsiHandler({ final: "J" }, (params) => {
+      if (params[0] === 2) term.clear();
+      return false; // the normal erase still runs
+    });
 
     let ws: WebSocket | null = null;
     let closed = false;
@@ -85,6 +92,14 @@ export function Terminal({
         ws.send(JSON.stringify({ type: "input", data }));
     };
     sendRef.current = send;
+    // Only real size changes reach the CLI (each one makes it redraw everything).
+    let sent = "";
+    const sendSize = () => {
+      const size = `${term.cols}x${term.rows}`;
+      if (size === sent || ws?.readyState !== WebSocket.OPEN) return;
+      sent = size;
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    };
     const connect = () => {
       setStatus("connecting");
       const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -95,9 +110,8 @@ export function Terminal({
       ws.onopen = () => {
         setStatus("on");
         term.reset();
-        ws?.send(
-          JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
-        );
+        sent = "";
+        sendSize();
       };
       ws.onmessage = (m) => {
         if (typeof m.data === "string") term.write(m.data);
@@ -120,10 +134,7 @@ export function Terminal({
     const onData = term.onData(send);
     const ro = new ResizeObserver(() => {
       doFit();
-      if (ws?.readyState === WebSocket.OPEN)
-        ws.send(
-          JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
-        );
+      sendSize();
     });
     ro.observe(host);
     if (!touch) term.focus();
@@ -132,6 +143,7 @@ export function Terminal({
       window.clearTimeout(retry);
       ro.disconnect();
       onData.dispose();
+      eraseHook.dispose();
       ws?.close();
       term.dispose();
       termRef.current = null;
