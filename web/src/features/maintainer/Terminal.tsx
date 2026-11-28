@@ -46,7 +46,9 @@ export function Terminal({
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState("");
   const touch =
-    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+    (typeof matchMedia === "function" &&
+      matchMedia("(any-pointer: coarse)").matches) ||
+    (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -77,12 +79,17 @@ export function Terminal({
       term.textarea.setAttribute("inputmode", "none");
       term.textarea.tabIndex = -1;
     }
+    // Track whether the user wants to follow the latest output so streaming / redraws never drift upward.
+    let stickBottom = true;
+    const isAtBottom = () =>
+      term.buffer.active.viewportY >= term.buffer.active.baseY - 2;
+    const onScroll = term.onScroll(() => {
+      stickBottom = isAtBottom();
+    });
     const doFit = () => {
       try {
-        const atBottom =
-          term.buffer.active.viewportY >= term.buffer.active.baseY - 1;
         fit.fit();
-        if (atBottom) term.scrollToBottom();
+        if (stickBottom) term.scrollToBottom();
       } catch {
         /* not laid out yet */
       }
@@ -103,6 +110,7 @@ export function Terminal({
     let retry: number | undefined;
     let fitTimer: number | undefined;
     const send = (data: string) => {
+      stickBottom = true;
       if (ws?.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: "input", data }));
     };
@@ -124,13 +132,17 @@ export function Terminal({
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
         setStatus("on");
+        stickBottom = true;
         term.reset();
         sent = "";
         sendSize();
       };
       ws.onmessage = (m) => {
-        if (typeof m.data === "string") term.write(m.data);
-        else term.write(new Uint8Array(m.data as ArrayBuffer));
+        const afterWrite = () => {
+          if (stickBottom) term.scrollToBottom();
+        };
+        if (typeof m.data === "string") term.write(m.data, afterWrite);
+        else term.write(new Uint8Array(m.data as ArrayBuffer), afterWrite);
       };
       ws.onclose = () => {
         setStatus("off");
@@ -162,6 +174,7 @@ export function Terminal({
       if (!vv || !box) return;
       box.style.height = `${Math.round(vv.height)}px`;
       box.style.top = `${Math.round(vv.offsetTop)}px`;
+      if (window.scrollY !== 0) window.scrollTo(0, 0);
     };
     if (vv) {
       syncViewport();
@@ -178,6 +191,7 @@ export function Terminal({
         vv.removeEventListener("scroll", syncViewport);
       }
       ro.disconnect();
+      onScroll.dispose();
       onData.dispose();
       eraseHook.dispose();
       ws?.close();
@@ -271,6 +285,16 @@ export function Terminal({
                   : "mất kết nối, đang nối lại…"}
         </span>
         <button
+          type="button"
+          className="term-img-btn"
+          disabled={uploading}
+          onPointerDown={(ev) => ev.preventDefault()}
+          onClick={() => fileRef.current?.click()}
+          title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
+        >
+          {uploading ? "Đang tải…" : "Gửi ảnh"}
+        </button>
+        <button
           className="term-close"
           onClick={onClose}
           aria-label="Đóng (phiên CLI vẫn chạy trên máy chủ)"
@@ -287,16 +311,14 @@ export function Terminal({
         }}
       />
       <div className="term-keys">
-        {!touch && (
-          <button
-            disabled={uploading}
-            onPointerDown={(ev) => ev.preventDefault()}
-            onClick={() => fileRef.current?.click()}
-            title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
-          >
-            {uploading ? "Đang tải…" : "Gửi ảnh"}
-          </button>
-        )}
+        <button
+          type="button"
+          onPointerDown={(ev) => ev.preventDefault()}
+          onClick={() => termRef.current?.scrollToBottom()}
+          title="Cuộn xuống cuối đoạn chat"
+        >
+          ↓ Cuối
+        </button>
         {KEYS.map(([label, seq]) => (
           <button
             key={label}
