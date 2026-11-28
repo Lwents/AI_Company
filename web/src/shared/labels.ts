@@ -19,6 +19,7 @@ export const ROLE_LABEL: Record<Role, string> = {
   data_engineer: "Data Engineer",
   security: "Security",
   legal: "Pháp chế",
+  maintainer: "Bảo trì hệ thống",
 };
 
 export const ROLES = Object.keys(ROLE_LABEL) as Role[];
@@ -43,6 +44,7 @@ export const ROLE_JOB: Record<Role, string> = {
   data_engineer: "Mô hình dữ liệu, lưu trữ, migration, sao lưu, chỉ số",
   security: "Kiểm tra bảo mật, lỗ hổng thư viện, bí mật bị lộ; chặn phát hành khi nguy hiểm",
   legal: "Điều khoản sử dụng, chính sách bảo mật, rủi ro pháp lý",
+  maintainer: "Sửa chính hệ thống AI Company bằng Claude CLI: nhắn gì làm nấy, commit và push lên git để server tự cập nhật",
 };
 
 /** Departments, for grouping staff. */

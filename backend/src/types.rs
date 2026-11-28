@@ -22,6 +22,8 @@ pub enum Role {
     DataEngineer,
     Security,
     Legal,
+    /// Works on AI Company's own source code through Claude CLI (fix, commit, push → deploy).
+    Maintainer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -228,6 +230,10 @@ pub struct Project {
     /// Rounds the hand-over gate sent the work back (blocked tickets / machine-found problems).
     #[serde(default)]
     pub gate_rounds: u32,
+    /// How the team works: "fast" (one strong engineer builds it straight through, for small jobs),
+    /// "full" (the whole company process); "" = full.
+    #[serde(default)]
+    pub mode: String,
     /// Meeting minutes written so far (numbering for docs/meetings/).
     #[serde(default)]
     pub meetings: u32,

@@ -154,3 +154,13 @@
   margin: 4px 0 0;
   padding-left: 18px;
 }
+
+/* Fast lane: badge and the steps it skips. */
+.pill.mode-fast {
+  background: var(--amber);
+  color: #1b1b1b;
+}
+.phases .skip {
+  opacity: 0.35;
+  text-decoration: line-through;
+}

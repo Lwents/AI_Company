@@ -223,6 +223,7 @@ impl Store {
     pub fn hire(&self, role: Role, name: Option<String>) -> Employee {
         let n = self.with(|s| s.employees.len());
         let model = match role {
+            Role::Maintainer => "ag/claude-opus-5-5",
             Role::Ceo | Role::Architect => "claude-opus-5-5",
             Role::Tester | Role::Secretary | Role::Devops | Role::Support | Role::Hr | Role::Accountant => "claude-haiku-5-5",
             _ => "claude-sonnet-5-5",

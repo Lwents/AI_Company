@@ -23,7 +23,7 @@ pub struct JobResult {
     pub created_tickets: u32,
 }
 
-fn system_prompt(e: &Employee, project: &Project, dir: &PathBuf) -> String {
+fn system_prompt(store: &S, e: &Employee, project: &Project, dir: &PathBuf) -> String {
     let mut s = format!(
         "{duty}\n\nBạn tên {name}, làm việc tại một công ty phần mềm vận hành bởi các AI. Chủ tịch (người dùng) giao dự án; CEO điều phối; mỗi người làm đúng vai trò.\n\n\
 Dự án: {pname}\nThư mục dự án: {dir} (mọi đường dẫn trong tool là tương đối so với thư mục này).\n\n\
@@ -39,6 +39,9 @@ Quy tắc:\n\
         pname = project.name,
         dir = dir.display(),
     );
+    // What the customer actually asked for and decided, word for word — the same for everyone, so a request
+    // is never lost or distorted while the work passes from person to person.
+    s.push_str(&project_card(store, project));
     // The project's non-negotiable principles apply to everyone, every step.
     if let Ok(c) = std::fs::read_to_string(dir.join("docs").join("CONSTITUTION.md")) {
         let c: String = c.trim().chars().take(4000).collect();
@@ -50,6 +53,49 @@ Quy tắc:\n\
     if !e.extra_prompt.trim().is_empty() {
         s.push_str("\n\nChỉ dẫn thêm từ Chủ tịch:\n");
         s.push_str(e.extra_prompt.trim());
+    }
+    s
+}
+
+fn clip(s: &str, n: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() > n { s.chars().take(n).collect::<String>() + "…" } else { s.to_string() }
+}
+
+/// The customer's own words for this project: the request, change requests, answers to the team's questions
+/// and recent instructions in chat.
+pub(crate) fn project_card(store: &S, p: &Project) -> String {
+    if p.id.is_empty() || p.request.trim().is_empty() {
+        return String::new();
+    }
+    let mut s = format!("\n\n# THẺ DỰ ÁN — LỜI KHÁCH HÀNG (nguồn sự thật chung cho cả đội; tài liệu nào mâu thuẫn thì theo thẻ này)\nYêu cầu gốc: {}\n", clip(&p.request, 1500));
+    for (i, fb) in p.feedback.iter().enumerate().rev().take(4).collect::<Vec<_>>().into_iter().rev() {
+        s.push_str(&format!("Yêu cầu sửa vòng {}: {}\n", i + 1, clip(fb, 600)));
+    }
+    let (answers, orders): (Vec<String>, Vec<String>) = store.with(|st| {
+        let a: Vec<String> = st
+            .approvals
+            .iter()
+            .filter(|a| a.project_id.as_deref() == Some(&p.id) && a.answer.as_deref().is_some_and(|x| !x.trim().is_empty()))
+            .map(|a| format!("- {} → {}", clip(&a.title, 90), clip(a.answer.as_deref().unwrap_or(""), 220)))
+            .collect();
+        let o: Vec<String> = st
+            .messages
+            .iter()
+            .filter(|m| m.project_id.as_deref() == Some(&p.id) && m.from == "chairman" && m.kind == "chat")
+            .map(|m| format!("- {}", clip(&m.text, 220)))
+            .collect();
+        (a, o)
+    });
+    if !answers.is_empty() {
+        s.push_str("Chủ tịch đã trả lời / quyết định:\n");
+        s.push_str(&answers[answers.len().saturating_sub(6)..].join("\n"));
+        s.push('\n');
+    }
+    if !orders.is_empty() {
+        s.push_str("Chỉ đạo gần đây của Chủ tịch (chat):\n");
+        s.push_str(&orders[orders.len().saturating_sub(5)..].join("\n"));
+        s.push('\n');
     }
     s
 }
@@ -99,7 +145,7 @@ impl Drop for BrowserLive {
     }
 }
 
-fn image_mime(path: &str) -> Option<&'static str> {
+pub(crate) fn image_mime(path: &str) -> Option<&'static str> {
     match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -110,7 +156,7 @@ fn image_mime(path: &str) -> Option<&'static str> {
 }
 
 /// An image file as (mime, base64) for the model; skipped when missing or too big (> 4 MB).
-fn image_attachment(path: &std::path::Path) -> Option<(String, String)> {
+pub(crate) fn image_attachment(path: &std::path::Path) -> Option<(String, String)> {
     let mime = image_mime(&path.to_string_lossy())?;
     let meta = std::fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() > 4 * 1024 * 1024 {
@@ -234,6 +280,9 @@ fn describe_call(name: &str, input: &Value) -> String {
             _ => format!("Đọc {}", g("path")),
         },
         "list_files" => "Xem danh sách tệp".into(),
+        "web_search" => format!("Tìm trên web: {}", input.get("query").and_then(Value::as_str).unwrap_or("").chars().take(60).collect::<String>()),
+        "fetch_url" => format!("Đọc trang: {}", input.get("url").and_then(Value::as_str).unwrap_or("").chars().take(80).collect::<String>()),
+        "download_file" => format!("Tải tệp: {} → {}", input.get("url").and_then(Value::as_str).unwrap_or("").chars().take(70).collect::<String>(), input.get("path").and_then(Value::as_str).unwrap_or("")),
         "read_skill" => match g("file").trim() {
             "" => format!("Đọc skill {}", g("name")),
             f => format!("Đọc skill {} › {f}", g("name")),
@@ -525,7 +574,7 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
         ticket: ticket.as_ref().map(|t| llm::TicketMeta { key: t.key.clone(), title: t.title.clone(), bounces: t.bounces }),
     };
     let mut tools = tools::tools_for(emp.role, job.phase);
-    let mut system = system_prompt(&emp, &project, &dir);
+    let mut system = system_prompt(store, &emp, &project, &dir);
     // Skills (role playbooks + per-employee custom skills + optional tools-mode GEMINI.md) and MCP servers.
     let root = store.data_dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let settings_snapshot = store.with(|s| s.settings.clone());
@@ -779,6 +828,14 @@ async fn run_job(store: &S, job: Job, model: Option<&str>, cancel: &Cancellation
                 "write_file" if !is_error => crate::screen::code(store, &emp.id, pid, &ctx.dir, path, "write", &c.input),
                 "edit_file" if !is_error => crate::screen::code(store, &emp.id, pid, &ctx.dir, path, "edit", &c.input),
                 "read_file" if !is_error => crate::screen::code(store, &emp.id, pid, &ctx.dir, path, "read", &c.input),
+                "web_search" | "fetch_url" => {
+                    let url = if c.name == "web_search" {
+                        format!("https://www.bing.com/search?q={}", c.input.get("query").and_then(Value::as_str).unwrap_or("").replace(' ', "+"))
+                    } else {
+                        c.input.get("url").and_then(Value::as_str).unwrap_or("").to_string()
+                    };
+                    crate::screen::browser(store, &emp.id, pid, &label, "", &serde_json::json!({ "url": url }), None);
+                }
                 "run_command" => crate::screen::terminal(store, &emp.id, pid, c.input.get("command").and_then(Value::as_str).unwrap_or_default(), &content, !is_error),
                 _ => {}
             }

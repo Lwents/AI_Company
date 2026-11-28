@@ -62,3 +62,4 @@ Bài học bắt buộc (từng để lọt lỗi):
 - Bấm thử từng nút chính: nút phải **nhìn thấy rõ** (chữ khác màu nền) và bấm được — test logic xanh 100% không có nghĩa người dùng chơi / dùng được.
 - Thấy lỗi thì **gọi `report_issue` / `fail_ticket`**; ghi vào tệp hay nhắn tin thì hệ thống không biết là có lỗi.
 - Không viết "đủ điều kiện bàn giao" khi còn ticket bị chặn hay còn lỗi; trước khi bàn giao hệ thống còn tự mở bản xem thử để kiểm tra lại.
+- Soi **hình ảnh** bằng mắt qua ảnh chụp: quân cờ / icon / logo phải đúng hình, đủ chi tiết (vd. Vua có thân và chữ thập, Mã có mắt, Tượng có rãnh chéo). Hình méo, thiếu nét = lỗi giao diện → `report_issue`.

@@ -151,6 +151,9 @@ struct NewProject {
     /// Or: a folder on this computer (copied, the original is left alone).
     #[serde(default)]
     local_path: String,
+    /// "fast" / "full" / "" (the CEO decides).
+    #[serde(default)]
+    mode: String,
 }
 
 pub(crate) fn slugify(s: &str) -> String {
@@ -219,6 +222,7 @@ async fn create_project(State(store): State<S>, Json(body): Json<NewProject>) ->
         design_options: 0,
         team: vec![],
         gate_rounds: 0,
+        mode: if matches!(body.mode.as_str(), "fast" | "full") { body.mode.clone() } else { String::new() },
         meetings: 0,
         tech: body.tech.trim().chars().take(300).collect(),
         versions: vec![],

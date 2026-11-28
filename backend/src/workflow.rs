@@ -70,7 +70,8 @@ pub fn assign_team(store: &S, pid: &str) -> Vec<String> {
                 *load.entry(id.clone()).or_default() += 1;
             }
         }
-        (s.employees.iter().filter(|e| e.enabled).cloned().collect::<Vec<_>>(), load)
+        // The system maintainer works on AI Company itself, never on customer projects.
+        (s.employees.iter().filter(|e| e.enabled && e.role != Role::Maintainer).cloned().collect::<Vec<_>>(), load)
     });
     let mut team = vec![];
     let mut roles: Vec<Role> = vec![];
@@ -91,7 +92,7 @@ pub fn assign_team(store: &S, pid: &str) -> Vec<String> {
 }
 
 fn everyone(store: &S) -> Vec<String> {
-    store.with(|s| s.employees.iter().filter(|e| e.enabled).map(|e| e.id.clone()).collect())
+    store.with(|s| s.employees.iter().filter(|e| e.enabled && e.role != Role::Maintainer).map(|e| e.id.clone()).collect())
 }
 
 pub(crate) fn summary_of(o: &Outcome) -> String {
@@ -208,8 +209,13 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
         let p = store.project(pid).ok_or("Dự án không tồn tại")?;
         let next = match p.phase {
             Phase::Plan => {
-                phase_plan(store, &p, cancel).await?;
-                Phase::Requirements
+                if decide_mode(store, &p) == "fast" {
+                    fast_plan(store, &p)?;
+                    Phase::Build
+                } else {
+                    phase_plan(store, &p, cancel).await?;
+                    Phase::Requirements
+                }
             }
             Phase::Requirements => {
                 phase_requirements(store, &p, cancel).await?;
@@ -232,7 +238,9 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
                 Phase::Release
             }
             Phase::Release => {
-                if phase_release(store, &p, cancel).await? {
+                // Fast lane: no design / security / QA rounds — the browser check before hand-over still applies.
+                let again = if is_fast(&p) { ship_gate(store, &p, cancel).await? } else { phase_release(store, &p, cancel).await? };
+                if again {
                     Phase::Build
                 } else {
                     Phase::Report
@@ -240,7 +248,9 @@ async fn run_project(store: &S, pid: &str, cancel: &CancellationToken) -> Result
             }
             Phase::Report => {
                 phase_report(store, &p, cancel).await?;
-                retrospective(store, &p, cancel).await;
+                if !is_fast(&p) {
+                    retrospective(store, &p, cancel).await;
+                }
                 crate::gitflow::commit(store, pid, &format!("{}: bàn giao{}", p.name, if p.feedback.is_empty() { String::new() } else { format!(" sau yêu cầu sửa #{}", p.feedback.len()) })).await;
                 let label = if p.feedback.is_empty() { "Bàn giao lần đầu".to_string() } else { format!("Bàn giao sau yêu cầu sửa #{}", p.feedback.len()) };
                 crate::history::snapshot(store, pid, &label).await;
@@ -930,6 +940,7 @@ pub fn draft_project(store: &S, name: &str, request: &str) -> Project {
         design_options: 0,
         team: vec![],
         gate_rounds: 0,
+        mode: String::new(),
         meetings: 0,
         tech: String::new(),
         versions: vec![],
@@ -1247,6 +1258,9 @@ async fn phase_data(store: &S, p: &Project, lead: &Employee, cancel: &Cancellati
 }
 
 async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
+    if is_fast(p) {
+        return fast_build(store, p, cancel).await;
+    }
     let devs = team_staff(store, Role::Dev);
     if devs.is_empty() {
         return Err("Công ty cần ít nhất 1 Dev đang làm việc".into());
@@ -1293,6 +1307,134 @@ async fn phase_build(store: &S, p: &Project, cancel: &CancellationToken) -> Resu
     }
 
     run_dev_workers(store, &p.id, cancel).await
+}
+
+/// How every Dev ends a job: what the next person (Reviewer / Tester) needs, so nothing is lost in the hand-over.
+const HANDOFF_FORMAT: &str = " Phần tóm tắt khi finish là BIÊN BẢN BÀN GIAO cho người kiểm tra tiếp theo, gồm: (a) tệp đã tạo / sửa; (b) cách kiểm tra từng tiêu chí (lệnh chạy, địa chỉ trang, bấm gì → thấy gì); (c) điều chưa làm, giả định, rủi ro.";
+
+pub(crate) fn is_fast(p: &Project) -> bool {
+    p.mode == "fast"
+}
+
+/// Who builds a small project alone: the Tech Lead (strongest model), else a Dev.
+fn fast_builder(store: &S) -> Option<Employee> {
+    first(store, &[Role::Architect, Role::Dev])
+}
+
+/// How this project is worked: the chairman's choice ("fast" / "full"); projects without one use the full process.
+/// The fast lane is announced once so the chairman knows who is building it.
+fn decide_mode(store: &S, p: &Project) -> String {
+    if p.mode.is_empty() {
+        store.update_project(&p.id, |x| x.mode = "full".into());
+        return "full".into();
+    }
+    if p.mode == "fast" && p.feedback.is_empty() && store.tickets_of(&p.id).is_empty() {
+        let who = fast_builder(store).map(|e| format!("{} ({})", e.name, crate::config::role_label(e.role))).unwrap_or_else(|| "một kỹ sư".into());
+        let from = first(store, &[Role::Ceo]).map(|e| e.id).unwrap_or_else(|| "system".into());
+        store.post_message(Some(&p.id), &from, "chairman", format!("⚡ Làm theo CHẾ ĐỘ NHANH: {who} làm liền một mạch từ đầu đến cuối, máy tự kiểm tra trên trình duyệt rồi Tester dùng thử như người dùng — không họp, không đặc tả dài."), "chat");
+    }
+    p.mode.clone()
+}
+
+/// The fast lane's single piece of work: the whole request (or this round of changes) as one ticket.
+fn fast_plan(store: &S, p: &Project) -> Result<(), String> {
+    let builder = fast_builder(store).ok_or("Công ty cần ít nhất 1 Tech Lead hoặc Dev đang làm việc")?;
+    let open = store.tickets_of(&p.id).iter().any(|t| !matches!(t.status, TicketStatus::Done | TicketStatus::Blocked));
+    if !open {
+        let (title, description) = match p.feedback.last() {
+            Some(fb) => (format!("[Sửa đổi {}] {}", p.feedback.len(), short_text(fb, 70)), format!("YÊU CẦU SỬA của khách (vòng {}):\n{fb}\n\nYêu cầu gốc của dự án:\n{}\n\nSản phẩm cũ đã có trong thư mục dự án: chỉ sửa phần được yêu cầu, không làm hỏng phần đang chạy.", p.feedback.len(), p.request)),
+            None => (format!("Làm trọn sản phẩm: {}", short_text(&p.name, 60)), format!("Yêu cầu của khách:\n{}", p.request)),
+        };
+        let seq = store.update_project(&p.id, |p| {
+            p.ticket_seq += 1;
+            p.ticket_seq
+        });
+        store.insert_ticket(Ticket {
+            id: crate::store::new_id(),
+            project_id: p.id.clone(),
+            key: format!("T-{}", seq.unwrap_or(1)),
+            title,
+            description,
+            acceptance: vec![
+                "Đáp ứng đầy đủ từng ý trong yêu cầu của khách".into(),
+                "Mở bản xem thử là dùng được ngay: không lỗi JavaScript, không tệp 404".into(),
+                "Giao diện đẹp, hiện đại; hiển thị tốt ở máy tính 1280px và điện thoại 375px, không tràn ngang".into(),
+                "Mọi nút / liên kết nhìn rõ và bấm được".into(),
+                "Có README.md ngắn: sản phẩm là gì, cách mở / chạy".into(),
+            ],
+            kind: "feature".into(),
+            status: TicketStatus::Todo,
+            assignee: Some(builder.id.clone()),
+            created_by: "system".into(),
+            bounces: 0,
+            notes: vec![],
+            priority: 1,
+            created_at: now_ms(),
+            updated_at: now_ms(),
+        });
+    }
+    if let Some(ceo) = first(store, &[Role::Ceo]).filter(|c| c.id != builder.id) {
+        handoff(store, &p.id, &ceo.id, &builder.id, "Chế độ làm nhanh: em làm trọn sản phẩm theo yêu cầu của khách, xong bàn giao Tester dùng thử.");
+    }
+    Ok(())
+}
+
+/// One engineer works through the open tickets (the product, then fixes found by the checks).
+async fn fast_build(store: &S, p: &Project, cancel: &CancellationToken) -> Result<(), String> {
+    let builder = fast_builder(store).ok_or("Công ty cần ít nhất 1 Tech Lead hoặc Dev đang làm việc")?;
+    for t in store.tickets_of(&p.id) {
+        if t.status == TicketStatus::InProgress {
+            store.update_ticket(&t.id, |t| t.status = TicketStatus::Todo);
+        }
+    }
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ABORTED.into());
+        }
+        let next = store.with(|s| {
+            let mut c: Vec<&Ticket> = s.tickets.iter().filter(|t| t.project_id == p.id && matches!(t.status, TicketStatus::Todo | TicketStatus::Review | TicketStatus::Testing)).collect();
+            c.sort_by_key(|t| ticket_pick_key(t));
+            c.first().map(|t| (t.id.clone(), t.status, t.assignee.clone()))
+        });
+        let Some((tid, stage, assignee)) = next else { return Ok(()) };
+        let who = assignee.filter(|a| store.employee(a).is_some_and(|e| e.enabled)).unwrap_or_else(|| builder.id.clone());
+        store.update_ticket(&tid, |t| {
+            if t.status == TicketStatus::Todo {
+                t.status = TicketStatus::InProgress;
+            }
+            t.assignee = Some(who.clone());
+        });
+        process_ticket(store, &p.id, &who, &tid, stage, cancel).await?;
+    }
+}
+
+fn fast_build_task(pid: &str) -> String {
+    format!(
+        "\nCHẾ ĐỘ LÀM NHANH: bạn làm MỘT MÌNH trọn việc này từ đầu đến cuối như kỹ sư senior của công ty hàng đầu — không có họp, không có đặc tả / kiến trúc dài, ĐỪNG viết tài liệu thừa.\n1. Đọc nhanh thư mục dự án (list_files). Chọn công nghệ ĐƠN GIẢN NHẤT đáp ứng yêu cầu (ưu tiên HTML/CSS/JS thuần; chỉ dùng Vite / framework khi thật cần), cấu trúc thư mục gọn.\n2. Viết code chạy được ngay; giao diện đẹp, hiện đại, dễ dùng (tự thiết kế; cần tham khảo thì web_search; tài nguyên chuẩn như icon / quân cờ / cờ thì tải bản gốc bằng download_file, không tự vẽ).\n3. Mở bản xem thử {} bằng trình duyệt ở 1280px và 375px, bấm thử mọi chức năng, xem console, chụp màn hình tự soi; sửa tới khi chạy đúng và đẹp.\n4. README.md ngắn: sản phẩm là gì, cách mở / chạy.\nXong gọi finish.{HANDOFF_FORMAT}",
+        crate::config::preview_url(pid)
+    )
+}
+
+/// Files changed but not committed yet (= the work of the ticket in progress).
+async fn changed_files(dir: &Path) -> String {
+    if !dir.join(".git").exists() {
+        return String::new();
+    }
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["status", "-s", "--untracked-files=all"]).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").kill_on_drop(true);
+    if let Some(parent) = dir.parent() {
+        cmd.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(8), cmd.output()).await else { return String::new() };
+    let s = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = s.lines().filter(|l| !l.contains(".playwright-mcp") && !l.contains("node_modules")).collect();
+    let mut out = lines.iter().take(40).copied().collect::<Vec<_>>().join("\n");
+    if lines.len() > 40 {
+        out.push_str(&format!("\n… và {} tệp khác", lines.len() - 40));
+    }
+    out
 }
 
 /// Sort key for picking the next workable ticket: finish Testing/Review tickets first so resumes never redo prior stages.
@@ -1401,16 +1543,21 @@ fn last_dev_summary(t: &Ticket) -> String {
 async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start_stage: TicketStatus, cancel: &CancellationToken) -> Result<(), String> {
     let max_bounces = store.with(|s| s.settings.max_bounces);
     let project_dir = store.project(pid).map(|p| store.dir_of(&p));
+    let fast = store.project(pid).is_some_and(|p| is_fast(&p));
     loop {
         let t = store.ticket(tid).ok_or("Ticket không tồn tại")?;
         let dev_summary = if matches!(start_stage, TicketStatus::Review | TicketStatus::Testing) {
             last_dev_summary(&t)
         } else {
             store.update_ticket(tid, |t| t.status = TicketStatus::InProgress);
-            let task = format!(
-                "{}\nDựa vào Bộ nhớ tiến độ (docs/PROGRESS.md) và CHỈ đọc đúng các tệp/đoạn code liên quan trực tiếp tới ticket này (KHÔNG đọc lại toàn bộ docs/*.md hay cả dự án từ đầu khi tiêu chí đã rõ). Viết/sửa code hoàn thành ticket theo đúng cây thư mục trong docs/ARCHITECTURE.md và tiêu chí nghiệm thu, tự chạy test kiểm chứng bằng run_command, rồi gọi finish với tóm tắt ngắn gọn các tệp đã sửa và kết quả test.",
-                ticket_brief(&t)
-            );
+            let task = if fast {
+                format!("{}\n{}", ticket_brief(&t), fast_build_task(pid))
+            } else {
+                format!(
+                    "{}\nDựa vào Bộ nhớ tiến độ (docs/PROGRESS.md) và CHỈ đọc đúng các tệp/đoạn code liên quan trực tiếp tới ticket này (KHÔNG đọc lại toàn bộ docs/*.md hay cả dự án từ đầu khi tiêu chí đã rõ). Viết/sửa code hoàn thành ticket theo đúng cây thư mục trong docs/ARCHITECTURE.md và tiêu chí nghiệm thu, tự chạy test kiểm chứng bằng run_command, rồi gọi finish.{HANDOFF_FORMAT}",
+                    ticket_brief(&t)
+                )
+            };
             let r = match agent::run(store, Job { employee_id: dev_id.into(), project_id: pid.into(), phase: "implement", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await {
                 Ok(r) => r,
                 Err(e) if agent::is_refusal_err(&e) => {
@@ -1437,8 +1584,15 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start
             String::new()
         };
 
-        // Optional code review (skipped on resume if ticket was already in Testing).
-        if start_stage != TicketStatus::Testing {
+        // What changed (uncommitted = this ticket's work): the next person starts from facts, not a guess.
+        let changes = match project_dir.as_deref() {
+            Some(d) => changed_files(d).await,
+            None => String::new(),
+        };
+        let dev_summary = if changes.is_empty() { dev_summary } else { format!("{dev_summary}\nTệp thay đổi (git status -s):\n{changes}") };
+
+        // Optional code review (skipped on resume if ticket was already in Testing, and in the fast lane).
+        if start_stage != TicketStatus::Testing && !fast {
             if let Some(rev) = first(store, &[Role::Reviewer]) {
                 store.update_ticket(tid, |t| t.status = TicketStatus::Review);
                 handoff(store, pid, dev_id, &rev.id, format!("Nhờ review {}: {}", t.key, t.title));
@@ -1501,10 +1655,16 @@ async fn process_ticket(store: &S, pid: &str, dev_id: &str, tid: &str, mut start
         } else {
             String::new()
         };
-        let task = format!(
+        let task = if fast {
+            format!(
+                "{}\nNgười làm bàn giao: {dev_summary}{bounce_focus}\n\nCHẾ ĐỘ LÀM NHANH (dự án nhỏ): kiểm tra như NGƯỜI DÙNG THẬT, không cần bộ tài liệu QA đầy đủ. Mở bản xem thử {} bằng trình duyệt ở 1280px và 375px, đi qua TỪNG Ý trong yêu cầu của khách (bấm thử mọi nút, nhập thử, xem console có lỗi không), chụp màn hình để tự soi giao diện (chữ khó đọc, lệch, tràn, hình méo). Ghi docs/qa/QA-REPORT.md ngắn: đã thử gì, kết quả, lỗi còn lại. BẮT BUỘC gọi pass_ticket nếu người dùng dùng được trọn vẹn, hoặc fail_ticket kèm từng lỗi cụ thể (bước làm, thấy gì, mong đợi gì).",
+                ticket_brief(&t),
+                crate::config::preview_url(pid)
+            )
+        } else { format!(
             "{}\nDev báo: {dev_summary}{bounce_focus}\n\nKiểm tra ticket theo từng tiêu chí nghiệm thu, đúng kỹ năng Tester của bạn: chạy NGAY bộ test hiện có;{browser_step} xem `git show --stat` / `git diff` đúng phạm vi ticket (KHÔNG đọc lại từ đầu đến cuối các tệp dài > 500 dòng khi test đã xanh và tiêu chí đã rõ); bổ sung/giữ lại test tự động cho ca biên nếu còn thiếu (tên test ghi mã TC); cập nhật bộ tài liệu QA trong docs/qa/ CHỈ cho phần của ticket này (các dòng case của FR trong ticket ở TEST-CASES.md với kết quả thực tế + trạng thái, các dòng FR đó trong RTM.md, bug mới / retest trong BUGS.md; chưa có TEST-PLAN.md thì viết). BẮT BUỘC gọi pass_ticket ngay khi đạt hết tiêu chí, hoặc fail_ticket kèm mô tả lỗi cụ thể nếu chưa đạt.",
             ticket_brief(&t),
-        );
+        ) };
         let r = match agent::run(store, Job { employee_id: tester.id.clone(), project_id: pid.into(), phase: "test", ticket_id: Some(tid.into()), case_id: None, task }, cancel).await {
             Ok(r) => r,
             Err(e) if agent::is_refusal_err(&e) => {
@@ -1838,7 +1998,7 @@ async fn phase_report(store: &S, p: &Project, cancel: &CancellationToken) -> Res
             return Err(e);
         }
     };
-    let minutes_result = minutes(store, p, "Họp tổng kết", "docs/REPORT.md", cancel).await;
+    let minutes_result = if is_fast(p) { Ok(()) } else { minutes(store, p, "Họp tổng kết", "docs/REPORT.md", cancel).await };
     meeting(store, &p.id, all, "", false);
     minutes_result?;
     let summary = summary_of(&r.outcome);

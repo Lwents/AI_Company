@@ -7,3 +7,5 @@
 - Vấn đề khó (thiết kế, lỗi khó tái hiện): dùng thinking__ để suy nghĩ có cấu trúc trước khi làm.
 - Bộ nhớ công ty (memory__ nếu có): đầu việc tìm bài học liên quan; cuối việc lưu 1–3 bài học thật sự đáng nhớ.
 - Báo cáo trung thực: nói rõ cái gì đã kiểm chứng, cái gì chưa. Không tuyên bố "đã test" nếu chưa chạy.
+- Tra cứu Internet: `web_search` (tìm), `fetch_url` (đọc trang), `download_file` (tải nguyên bản tệp về dự án). Dùng khi cần thông tin mới, tài liệu, ví dụ thật, đối thủ — đừng đoán.
+- **Tài nguyên chuẩn đã có sẵn (bộ quân cờ, lá bài, cờ quốc gia, logo hãng, icon, bản đồ, font…) TUYỆT ĐỐI không tự vẽ / gõ lại đường SVG từ trí nhớ** — sẽ méo, thiếu chi tiết mà vẫn tưởng là "chuẩn". Tìm bản gốc có giấy phép mở (vd. quân cờ cburnett: `https://raw.githubusercontent.com/lichess-org/lila/master/public/piece/cburnett/wK.svg` … `bP.svg`; icon: Lucide / Heroicons; cờ: flag-icons) rồi `download_file` hoặc cài gói npm, ghi nguồn + giấy phép vào docs/CREDITS.md.

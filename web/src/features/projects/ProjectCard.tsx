@@ -4,6 +4,9 @@ import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { confirmDialog } from "@/shared/ui/Dialog";
 import { PHASES, PROJECT_STATUS } from "@/shared/labels";
+
+/** Steps the fast lane skips (one engineer builds straight through). */
+const FAST_SKIPS: string[] = ["requirements", "planning", "design", "architecture"];
 import { usd } from "@/shared/format";
 import type { Project } from "@/api/types";
 import { previewUrl } from "@/shared/runtime";
@@ -64,12 +67,23 @@ export function ProjectCard({ p, selected, onSelect }: { p: Project; selected: b
     <section className={`card project ${selected ? "selected" : ""}`} onClick={onSelect}>
       <div className="row between">
         <h3 className="clip">{p.name}</h3>
-        <span className={`pill ${st.tone}`}>{st.label}</span>
+        <span className="row">
+          {p.mode === "fast" && (
+            <span className="pill mode-fast" title="Chế độ làm nhanh: một kỹ sư làm liền một mạch, không họp / đặc tả / nhiều mẫu thiết kế">
+              ⚡ Nhanh
+            </span>
+          )}
+          <span className={`pill ${st.tone}`}>{st.label}</span>
+        </span>
       </div>
       <p className="muted small clip2">{p.request}</p>
       <div className="phases">
         {PHASES.map((ph, i) => (
-          <span key={ph.id} className={i < phaseIdx ? "done" : i === phaseIdx ? "now" : ""} title={ph.label}>
+          <span
+            key={ph.id}
+            className={p.mode === "fast" && FAST_SKIPS.includes(ph.id) ? "skip" : i < phaseIdx ? "done" : i === phaseIdx ? "now" : ""}
+            title={p.mode === "fast" && FAST_SKIPS.includes(ph.id) ? `${ph.label} (bỏ qua ở chế độ nhanh)` : ph.label}
+          >
             {ph.label}
           </span>
         ))}

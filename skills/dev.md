@@ -9,3 +9,4 @@
 - Tự kiểm trước khi báo xong: chạy lint / typecheck / test / build; mở bản xem thử bằng trình duyệt (browser__) làm thử đúng luồng của ticket và xem console không có lỗi.
 - Viết hoặc cập nhật unit test cho logic mới, đặt cạnh module.
 - Tóm tắt khi finish: đã đổi tệp nào, đã kiểm chứng gì (lệnh nào chạy, kết quả).
+- Tài nguyên đồ họa chuẩn (quân cờ, icon, cờ, logo…): dùng đúng tệp gốc trong design/assets/ hoặc tải bằng `download_file` / gói npm theo DESIGN.md. KHÔNG gõ lại đường path SVG từ trí nhớ. Mở trình duyệt xem tận mắt từng hình đã hiện đúng, đủ chi tiết.

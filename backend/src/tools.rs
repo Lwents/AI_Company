@@ -89,7 +89,7 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
     if matches!(role, Role::Dev | Role::Tester | Role::Devops | Role::Architect | Role::Reviewer | Role::DataEngineer | Role::Security) {
         t.push(tool(
             "run_command",
-            "Chạy một lệnh shell 1 DÒNG (Windows cmd, KHÔNG chứa ký tự xuống dòng) trong thư mục dự án, tối đa 120 giây. KHÔNG chạy trực tiếp máy chủ treo vô hạn (như 'python server.py' hay 'npm run dev'); nếu cần test server hãy tự bật/tắt nó bên trong script test. Nếu cần chạy script nhiều dòng, hãy ghi vào tệp .py bằng write_file rồi chạy 'python <tệp>'.",
+            &format!("{}{}", if cfg!(windows) { "Chạy một lệnh shell 1 DÒNG (máy Windows, chạy bằng cmd; có thêm lệnh Unix của Git: ls, cat, head, tail, grep, sed, wc; KHÔNG chứa ký tự xuống dòng) trong thư mục dự án, tối đa 120 giây." } else { "Chạy một lệnh shell 1 DÒNG (máy Linux, sh; KHÔNG chứa ký tự xuống dòng) trong thư mục dự án, tối đa 120 giây." }, "KHÔNG chạy trực tiếp máy chủ treo vô hạn (như 'python server.py' hay 'npm run dev'); nếu cần test server hãy tự bật/tắt nó bên trong script test. Nếu cần chạy script nhiều dòng, hãy ghi vào tệp .py bằng write_file rồi chạy 'python <tệp>'."),
             obj(
                 json!({
                     "command": { "type": "string" },
@@ -207,6 +207,24 @@ pub fn tools_for(role: Role, phase: &str) -> Vec<ToolDef> {
             obj(json!({ "summary": { "type": "string" } }), &["summary"]),
         )),
     }
+    // Everyone can look things up on the web (not in meetings / votes, which only need the docs).
+    if !crate::mcp::light_phase(phase) {
+        t.push(tool(
+            "web_search",
+            "Tìm kiếm trên Internet (Bing): tài liệu, phiên bản thư viện, lỗi lạ, thông tin thị trường / đối thủ, luật, giá… Trả về tối đa 8 kết quả (tiêu đề, địa chỉ, mô tả). Đọc kỹ một trang bằng fetch_url.",
+            obj(json!({ "query": { "type": "string", "description": "Từ khóa tìm kiếm (tiếng Việt hoặc tiếng Anh)" } }), &["query"]),
+        ));
+        t.push(tool(
+            "fetch_url",
+            "Đọc nội dung chữ của một trang web công khai (http/https), tối đa khoảng 20.000 ký tự. Không đọc được địa chỉ nội bộ; bản xem thử của dự án thì mở bằng công cụ trình duyệt.",
+            obj(json!({ "url": { "type": "string" } }), &["url"]),
+        ));
+        t.push(tool(
+            "download_file",
+            "Tải NGUYÊN BẢN một tệp công khai (ảnh, SVG, icon, font, bộ quân cờ, dữ liệu…) về dự án. Dùng khi cần tài nguyên có sẵn chuẩn (vd. bộ quân cờ cburnett, cờ quốc gia, logo) thay vì tự vẽ lại từ trí nhớ. Ghi rõ nguồn + giấy phép vào docs/CREDITS.md.",
+            obj(json!({ "url": { "type": "string" }, "path": { "type": "string", "description": "Nơi lưu trong dự án, vd. frontend/public/pieces/wK.svg" } }), &["url", "path"]),
+        ));
+    }
     t
 }
 
@@ -226,6 +244,21 @@ pub fn read_skill_tool() -> ToolDef {
 }
 
 /// Resolve a model-supplied relative path inside the project directory, rejecting escapes.
+/// PATH with Git for Windows' Unix tools (tail, grep, head…) appended, so the commands models
+/// habitually type work in cmd. Windows' own tools keep priority.
+#[cfg(windows)]
+fn unix_tools_path() -> Option<String> {
+    static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let from_git = std::env::split_paths(&path).find(|d| d.join("git.exe").is_file()).and_then(|d| d.parent().map(|g| g.join("usr").join("bin")));
+        let program_files = std::env::var("ProgramFiles").ok().map(|p| PathBuf::from(p).join("Git").join("usr").join("bin"));
+        let bin = from_git.into_iter().chain(program_files).find(|b| b.join("tail.exe").is_file())?;
+        Some(format!("{path};{}", bin.display()))
+    })
+    .clone()
+}
+
 pub fn safe_path(dir: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim().replace('\\', "/");
     let rel = rel.trim_start_matches("./");
@@ -433,6 +466,23 @@ async fn run(ctx: &mut Ctx, name: &str, input: &Value) -> Result<String, String>
                 return Ok(format!("Đã ghi {rel} ({} byte). Bạn đã ghi tệp này {n} lần liên tiếp: nội dung đã đủ tốt, ĐỪNG sửa thêm nữa — gọi finish ngay.", content.len()));
             }
             Ok(format!("Đã ghi {rel} ({} byte)", content.len()))
+        }
+        "web_search" => crate::web::search(s(input, "query")).await,
+        "fetch_url" => crate::web::fetch(s(input, "url")).await,
+        "download_file" => {
+            let rel = s(input, "path");
+            if !may_write(me.role, rel) {
+                return Err(format!("Vai trò của bạn không được ghi {rel}. Lưu vào docs/ (hoặc design/ với Designer) rồi nhờ Dev đưa vào mã nguồn."));
+            }
+            let p = safe_path(&ctx.dir, rel)?;
+            let (bytes, kind) = crate::web::download(s(input, "url")).await?;
+            if let Some(parent) = p.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+            }
+            tokio::fs::write(&p, &bytes).await.map_err(|e| format!("Không ghi được {rel}: {e}"))?;
+            store.kpi(&me.id, |k| k.files_written += 1);
+            let head: String = String::from_utf8_lossy(&bytes[..bytes.len().min(160)]).chars().filter(|c| !c.is_control() || *c == '\n').collect();
+            Ok(format!("Đã tải {} byte ({kind}) vào {rel}. Mở đầu tệp: {head}", bytes.len()))
         }
         "run_command" => {
             let timeout = input.get("timeout_secs").and_then(|v| v.as_u64()).map(|s| s.clamp(5, 120)).unwrap_or(120);
@@ -889,6 +939,9 @@ async fn run_command(ctx: &mut Ctx, command: &str, timeout_secs: u64) -> Result<
         let mut c = tokio::process::Command::new("cmd");
         // Use /S /C with raw_arg so cmd.exe does not receive MSVCRT-escaped \" around quotes (e.g. node -e "...").
         c.arg("/S").arg("/C").raw_arg(format!("\"{command}\""));
+        if let Some(path) = unix_tools_path() {
+            c.env("PATH", path);
+        }
         c
     };
     #[cfg(not(windows))]

@@ -6,3 +6,4 @@ Soi theo thứ tự quan trọng:
 4. Giao diện: dùng tokens, đủ trạng thái, responsive (có thể mở browser__ để xem nhanh).
 5. Có test cho logic mới; test có nghĩa (không chỉ kiểm cho có).
 Chỉ request_changes vì vấn đề THẬT, ghi cụ thể: tệp, chỗ nào, vì sao sai, sửa thế nào. Góp ý nhỏ về phong cách thì ghi kèm khi approve, không chặn.
+6. Tài nguyên đồ họa: đường SVG dài viết tay trong mã (vd. pieceSvgs.ts) cho thứ vốn có bộ chuẩn (quân cờ, icon, cờ) → request_changes, yêu cầu dùng tệp gốc có nguồn + giấy phép.

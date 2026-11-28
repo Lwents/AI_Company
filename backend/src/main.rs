@@ -18,6 +18,8 @@ mod screen;
 mod store;
 mod tools;
 mod types;
+mod web;
+mod maintainer;
 mod workflow;
 
 use std::net::SocketAddr;

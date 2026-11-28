@@ -16,7 +16,8 @@ export type Role =
   | "accountant"
   | "data_engineer"
   | "security"
-  | "legal";
+  | "legal"
+  | "maintainer";
 export type ProviderId = "mock" | "anthropic" | "openai" | "openrouter" | "gemini" | "ollama" | "custom";
 
 export interface Employee {
@@ -83,6 +84,8 @@ export interface Project {
   id: string;
   /** Employees working on this project (picked when it starts). */
   team: string[];
+  /** "fast" = one engineer builds it straight through, "full" (or empty) = the whole company process. */
+  mode?: string;
   name: string;
   slug: string;
   request: string;

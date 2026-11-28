@@ -88,6 +88,7 @@ const ROOM_OF: Partial<Record<Role, ZoneId>> = {
   accountant: "finance",
   hr: "backoffice",
   legal: "backoffice",
+  maintainer: "devops",
 };
 
 const SLOTS: Partial<Record<ZoneId, P[]>> = {

@@ -51,7 +51,7 @@ function useScreen(empId: string) {
 /** Watch an employee work: their editor, terminal and browser, live, with a chat on the side. */
 export function ScreenView() {
   const { state, watching, setWatching, selectedProject } = useStore();
-  const [chatOpen, setChatOpen] = useState(() => typeof matchMedia !== "function" || !matchMedia("(max-width: 760px)").matches);
+  const [chatOpen, setChatOpen] = useState(() => typeof matchMedia !== "function" || !matchMedia("(max-width: 760px), (max-height: 520px)").matches);
   const id = watching!;
   const events = useScreen(id);
   const emp = state?.employees.find((e) => e.id === id);

@@ -33,11 +33,93 @@ fn reply_tool() -> ToolDef {
                 "task_project": { "type": "string", "description": "Việc làm ở đâu: mã dự án trong danh sách dự án của công ty; \"new\" nếu việc thuộc một sản phẩm KHÁC chưa có dự án (vd. đang ở dự án đồng hồ mà Chủ tịch bảo thiết kế web cờ vua) — hệ thống tạo dự án nháp riêng; bỏ trống = dự án đang chọn." },
                 "new_project_name": { "type": "string", "description": "Tên ngắn cho dự án nháp khi task_project là \"new\" (vd. \"Web cờ vua\")." },
                 "choose_design": { "type": "string", "description": "CHỈ khi đang chờ Chủ tịch chọn phương án thiết kế và Chủ tịch nói chọn phương án nào: chữ cái của phương án (a, b, c…), kèm góp ý nếu có, ví dụ \"b: chữ to hơn\". Bỏ trống nếu không." },
-                "change_request": { "type": "string", "description": "CHỈ khi Chủ tịch yêu cầu sửa / thêm / làm lại cho dự án (đã xong, đang chờ duyệt hoặc đang tạm dừng): mô tả đầy đủ yêu cầu thay đổi để cả đội làm vòng sửa đổi. Bỏ trống nếu không." }
+                "change_request": { "type": "string", "description": "CHỈ khi Chủ tịch yêu cầu sửa / thêm / làm lại cho dự án (đã xong, đang chờ duyệt hoặc đang tạm dừng): mô tả đầy đủ yêu cầu thay đổi để cả đội làm vòng sửa đổi. Bỏ trống nếu không." },
+                "work_mode": { "type": "string", "enum": ["none", "fast", "full"], "description": "Mặc định none. fast: CHỈ khi Chủ tịch bảo làm NHANH / gọn cho dự án này; full: CHỈ khi Chủ tịch bảo làm ĐỦ QUY TRÌNH công ty." },
+                "resend_designs": { "type": "boolean", "description": "true khi Chủ tịch muốn XEM LẠI các mẫu / phương án thiết kế đã làm (kèm ảnh): hệ thống mở lại thẻ chọn mẫu ở tab Duyệt." },
+                "set_team": { "type": "array", "items": { "type": "string" }, "description": "CHỈ khi Chủ tịch bảo đổi / rút gọn / thêm người trong NHÓM LÀM DỰ ÁN này: danh sách TÊN nhân viên của nhóm mới (đúng tên trong danh sách nhân viên). Bỏ trống nếu không." }
             },
             "required": ["text"]
         }),
     }
+}
+
+/// Read-only things an employee may do before answering the chairman.
+const MAX_LOOKS: usize = 6;
+
+/// Answers a chat message: the employee may first look at the project (files, screenshots) or the web,
+/// a few steps, then calls `reply`. Returns the reply's input.
+async fn answer(store: &S, emp: &Employee, msg: &ChatMsg, system: &str, ask: String) -> Result<Value, String> {
+    let pid = msg.project_id.as_deref();
+    let dir = pid.and_then(|id| store.project(id)).map(|p| store.dir_of(&p));
+    let mut tools = vec![reply_tool()];
+    tools.extend(crate::tools::tools_for(emp.role, "implement").into_iter().filter(|t| matches!(t.name.as_str(), "web_search" | "fetch_url") || (dir.is_some() && matches!(t.name.as_str(), "list_files" | "read_file"))));
+    let meta = Meta { phase: "chat", project_id: msg.project_id.clone().unwrap_or_default(), extra: String::new(), project_name: String::new(), request: String::new(), ticket: None };
+    let cancel = CancellationToken::new();
+    let mut ctx = dir.map(|d| crate::tools::Ctx {
+        store: store.clone(),
+        project_id: msg.project_id.clone().unwrap_or_default(),
+        employee: emp.clone(),
+        dir: d,
+        ticket_id: None,
+        case_id: None,
+        cancel: cancel.clone(),
+        outcome: None,
+        created_tickets: 0,
+        last_write: None,
+        read_ranges: Default::default(),
+        read_files: Default::default(),
+        phase: "chat",
+    });
+    let mut messages = vec![LlmMessage::User { text: Some(ask), tool_results: vec![] }];
+    for round in 0..=MAX_LOOKS {
+        let offer: &[ToolDef] = if round == MAX_LOOKS { &tools[..1] } else { &tools };
+        let res = llm::chat(store, LlmRequest { employee: emp, system, messages: &messages, tools: offer, max_tokens: 4000, meta: &meta }, &cancel).await?;
+        store.add_usage(&emp.id, pid, res.input_tokens, res.output_tokens);
+        if let Some(c) = res.tool_calls.iter().find(|c| c.name == "reply") {
+            return Ok(c.input.clone());
+        }
+        if res.tool_calls.is_empty() {
+            return Ok(json!({ "text": res.text }));
+        }
+        messages.push(LlmMessage::Assistant { text: res.text.clone(), tool_calls: res.tool_calls.clone(), raw: res.raw.clone(), raw_provider: res.raw_provider });
+        let mut results = vec![];
+        for c in &res.tool_calls {
+            let (content, is_error, images) = look(store, emp, pid, ctx.as_mut(), &c.name, &c.input).await;
+            results.push(llm::ToolResult { id: c.id.clone(), content, is_error, images });
+        }
+        let note = (round + 1 == MAX_LOOKS).then(|| "Đã xem đủ: bây giờ gọi reply để trả lời Chủ tịch.".to_string());
+        messages.push(LlmMessage::User { text: note, tool_results: results });
+    }
+    Err("Không trả lời được".into())
+}
+
+/// One read-only look (files of the project, the web). Returns (text, is_error, images).
+async fn look(store: &S, emp: &Employee, pid: Option<&str>, ctx: Option<&mut crate::tools::Ctx>, name: &str, input: &Value) -> (String, bool, Vec<(String, String)>) {
+    let arg = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let label = match name {
+        "web_search" => format!("Tìm trên web: {}", short(&arg("query"), 60)),
+        "fetch_url" => format!("Đọc trang: {}", short(&arg("url"), 80)),
+        "read_file" => format!("Xem {}", arg("path")),
+        "list_files" => "Xem danh sách tệp".to_string(),
+        _ => return ("Khi trả lời chat chỉ được XEM (list_files, read_file, web_search, fetch_url). Muốn làm việc thật thì giao bằng tham số task của reply.".into(), true, vec![]),
+    };
+    store.log_activity(&emp.id, pid, "tool", &label);
+    let (text, err) = match (name, ctx) {
+        ("web_search", _) => crate::web::search(&arg("query")).await.map_or_else(|e| (e, true), |t| (t, false)),
+        ("fetch_url", _) => crate::web::fetch(&arg("url")).await.map_or_else(|e| (e, true), |t| (t, false)),
+        (_, Some(ctx)) => {
+            let path = arg("path");
+            if name == "read_file" && crate::agent::image_mime(&path).is_some() {
+                return match crate::tools::safe_path(&ctx.dir, &path).ok().and_then(|p| crate::agent::image_attachment(&p)) {
+                    Some(img) => (format!("Ảnh {path} (xem hình đính kèm)."), false, vec![img]),
+                    None => (format!("Không mở được ảnh {path}"), true, vec![]),
+                };
+            }
+            crate::tools::execute(ctx, name, input).await
+        }
+        _ => ("Tin nhắn này không thuộc dự án nào nên không có tệp để xem.".into(), true),
+    };
+    (short(&text, 15_000), err, vec![])
 }
 
 /// Context the employee needs to answer: who they are, the project's state, the recent conversation.
@@ -70,6 +152,13 @@ fn context(store: &S, emp: &Employee, msg: &ChatMsg) -> String {
         if !pending.is_empty() {
             out += &format!("Đang chờ Chủ tịch duyệt:\n{}\n", pending.join("\n"));
         }
+        out += &format!("Cách làm: {}\n", match p.mode.as_str() { "fast" => "CHẾ ĐỘ NHANH (một kỹ sư làm liền, không họp / đặc tả)", "full" => "ĐỦ QUY TRÌNH công ty", _ => "ĐỦ QUY TRÌNH công ty (mặc định)" });
+        let team: Vec<String> = p.team.iter().map(|id| store.display_name(id)).collect();
+        out += &format!("Nhóm dự án hiện tại ({} người): {}\n", team.len(), if team.is_empty() { "chưa chia nhóm (dùng chung cả công ty)".into() } else { team.join(", ") });
+        let sets = design_sets(store, &p);
+        if !sets.is_empty() {
+            out += &format!("Các bộ mẫu thiết kế đã làm (xem lại được bằng resend_designs): {}\n", sets.iter().map(|(b, n)| format!("{b} ({n} mẫu)")).collect::<Vec<_>>().join("; "));
+        }
     } else {
         out += &format!("Tin nhắn chung (không thuộc dự án nào). Chế độ tự quyết toàn công ty: {}.\n", if crate::workflow::autopilot(store, None) { "BẬT" } else { "tắt" });
     }
@@ -77,6 +166,8 @@ fn context(store: &S, emp: &Employee, msg: &ChatMsg) -> String {
         Some(rt) => out += &format!("Bạn đang: {}.\n", rt.note),
         None => out += "Bạn đang rảnh, nhận việc được ngay.\n",
     }
+    let staff: Vec<String> = store.with(|s| s.employees.iter().filter(|e| e.enabled).map(|e| format!("{} ({})", e.name, config::role_label(e.role))).collect());
+    out += &format!("Nhân viên công ty: {}\n", staff.join(", "));
     let projects: Vec<String> = store.with(|s| s.projects.iter().rev().take(15).map(|p| format!("- {} (mã {}): {}", p.name, p.id, p.request.chars().take(80).collect::<String>())).collect());
     out += &format!("Các dự án của công ty (mới nhất trước):\n{}\n", projects.join("\n"));
     if let Some(p) = msg.project_id.as_deref().and_then(|id| store.project(id)).filter(|p| !p.team.is_empty()) {
@@ -106,27 +197,34 @@ fn short(s: &str, n: usize) -> String {
 
 async fn reply(store: &S, msg: &ChatMsg) -> Result<(), String> {
     let emp = store.employee(&msg.to).ok_or("Không có nhân viên")?;
+    // The system maintainer is Claude CLI itself, working on AI Company's source code.
+    if emp.role == Role::Maintainer {
+        return crate::maintainer::handle(store, msg).await;
+    }
     let idle = store.with(|s| s.runtime.get(&emp.id).is_none_or(|r| r.status == EmpStatus::Idle));
     if idle {
         store.set_runtime(&emp.id, EmpStatus::Thinking, "Đang trả lời Chủ tịch", msg.project_id.as_deref(), None);
     }
     let system = format!(
-        "Bạn là {}, {} của AI Company. {}\nChủ tịch (khách hàng, người quyết định cao nhất) vừa nhắn tin cho bạn. Trả lời lịch sự, ngắn gọn, đúng vai, xưng \"em\" và gọi \"anh/chị\". Nếu là chỉ đạo thì xác nhận và nói rõ sẽ làm gì; tin nhắn này cũng được chuyển tới người đang làm việc trong dự án. Gọi công cụ reply đúng một lần.",
+        "Bạn là {}, {} của AI Company. {}\nChủ tịch (khách hàng, người quyết định cao nhất) vừa nhắn tin cho bạn. Trả lời lịch sự, ngắn gọn, đúng vai, xưng \"em\" và gọi \"anh/chị\". Nếu là chỉ đạo thì xác nhận và nói rõ sẽ làm gì; tin nhắn này cũng được chuyển tới người đang làm việc trong dự án.
+Khi nhận việc (task) bạn làm thật bằng công cụ: đọc / ghi tệp trong dự án, TÌM KIẾM TRÊN INTERNET (web_search) và ĐỌC TRANG WEB (fetch_url), TẢI NGUYÊN BẢN TỆP TỪ WEB về dự án (download_file: ảnh, SVG, icon, font){}. Đừng nói là không truy cập được Internet hay không làm được — giao việc bằng tham số task.\nTRUNG THỰC: chỉ nói \"đã làm\" với việc bạn thực hiện bằng một tham số của reply (hệ thống sẽ ghi dòng ✅ bên dưới). Việc không có tham số tương ứng thì nói rõ là bạn chưa tự làm được và đề xuất cách khác — tuyệt đối không hứa suông. \nKhi Chủ tịch HỎI về dự án (tình trạng, lỗi, vì sao, thiết kế, code, số liệu…): XEM THẬT trước bằng list_files / read_file (đọc được cả ảnh chụp .png) hoặc web_search / fetch_url — vài bước là đủ — rồi trả lời dựa trên điều đã thấy, nói rõ đã xem tệp nào. Lời chào / chỉ đạo đơn giản thì trả lời ngay. Cuối cùng gọi công cụ reply đúng một lần.",
         emp.name,
         config::role_label(emp.role),
-        config::role_duty(emp.role)
+        config::role_duty(emp.role),
+        if matches!(emp.role, Role::Dev | Role::Tester | Role::Devops | Role::Architect | Role::Reviewer | Role::DataEngineer | Role::Security) {
+            ", chạy lệnh, trình duyệt thật"
+        } else if matches!(emp.role, Role::Pm | Role::Designer) {
+            ", trình duyệt thật"
+        } else {
+            ""
+        }
     );
     let ask = format!("{}\nTin nhắn của Chủ tịch:\n{}", context(store, &emp, msg), msg.text);
-    let meta = Meta { phase: "chat", project_id: msg.project_id.clone().unwrap_or_default(), extra: String::new(), project_name: String::new(), request: String::new(), ticket: None };
-    let messages = vec![LlmMessage::User { text: Some(ask), tool_results: vec![] }];
-    let tools = [reply_tool()];
-    let res = llm::chat(store, LlmRequest { employee: &emp, system: &system, messages: &messages, tools: &tools, max_tokens: 4000, meta: &meta }, &CancellationToken::new()).await;
+    let input = answer(store, &emp, msg, &system, ask).await;
     if idle {
         store.set_runtime(&emp.id, EmpStatus::Idle, "", None, None);
     }
-    let res = res?;
-    store.add_usage(&emp.id, msg.project_id.as_deref(), res.input_tokens, res.output_tokens);
-    let input = res.tool_calls.iter().find(|c| c.name == "reply").map(|c| c.input.clone()).unwrap_or_else(|| json!({ "text": res.text }));
+    let input = input?;
     let mut text = input.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string();
     if text.is_empty() {
         text = "Dạ em đã nhận được tin nhắn.".into();
@@ -212,6 +310,32 @@ Góp ý: {note}") };
                 }
             }
             None => done.push("ℹ️ Hiện không có phương án thiết kế nào đang chờ chọn.".into()),
+        }
+    }
+    if let Some(m) = input.get("work_mode").and_then(Value::as_str).filter(|m| matches!(*m, "fast" | "full")) {
+        match project_id.and_then(|id| store.project(id)) {
+            None => done.push("ℹ️ Anh/chị chọn dự án (tab Dự án) để em đổi cách làm.".into()),
+            Some(p) if p.mode == m => {}
+            Some(p) => {
+                store.update_project(&p.id, |x| x.mode = m.to_string());
+                done.push(if m == "fast" {
+                    format!("✅ Dự án \"{}\" chuyển sang CHẾ ĐỘ NHANH (áp dụng từ bước / vòng sửa tiếp theo).", p.name)
+                } else {
+                    format!("✅ Dự án \"{}\" chuyển sang ĐỦ QUY TRÌNH (áp dụng từ bước / vòng sửa tiếp theo).", p.name)
+                });
+            }
+        }
+    }
+    if input.get("resend_designs").and_then(Value::as_bool) == Some(true) {
+        match project_id.and_then(|id| store.project(id)) {
+            None => done.push("ℹ️ Anh/chị chọn dự án (tab Dự án) để em mở lại các mẫu thiết kế.".into()),
+            Some(p) => done.push(resend_designs(store, emp, &p)),
+        }
+    }
+    if let Some(names) = input.get("set_team").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        match project_id.and_then(|id| store.project(id)) {
+            None => done.push("ℹ️ Anh/chị chọn dự án (tab Dự án) để em đổi nhóm.".into()),
+            Some(p) => done.push(set_team(store, &p, names)),
         }
     }
     if let (Some(pid), Some(fb)) = (project_id, input.get("change_request").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())) {
@@ -354,6 +478,100 @@ async fn wait_until_free(store: &S, emp_id: &str) {
     }
 }
 
+/// Folders of design options in a project, newest first: (folder, number of options).
+fn design_sets(store: &S, p: &Project) -> Vec<(String, usize)> {
+    let dir = store.dir_of(p);
+    let mut bases = vec!["design/options".to_string()];
+    if let Ok(rd) = std::fs::read_dir(dir.join("design/ideas")) {
+        let mut ideas: Vec<String> = rd.flatten().filter(|d| d.path().is_dir()).map(|d| format!("design/ideas/{}", d.file_name().to_string_lossy())).collect();
+        ideas.sort();
+        ideas.reverse();
+        bases.splice(0..0, ideas);
+    }
+    bases
+        .into_iter()
+        .map(|b| {
+            let o = crate::workflow::design_options_at(&dir, &b);
+            let shots = o.iter().filter(|x| !x.images.is_empty()).count();
+            (format!("{b}{}", if shots == o.len() { ", đủ ảnh chụp" } else if shots > 0 { ", có ảnh một phần" } else { ", chưa có ảnh (hệ thống tự chụp khi mở thẻ)" }), o.len())
+        })
+        .filter(|(_, n)| *n > 0)
+        .collect()
+}
+
+/// Opens a choice card again for the newest set of design options (with screenshots).
+fn resend_designs(store: &S, emp: &Employee, p: &Project) -> String {
+    let open = store.with(|s| s.approvals.iter().any(|a| a.project_id.as_deref() == Some(&p.id) && a.status == ApprovalStatus::Pending && !a.options.is_empty()));
+    if open {
+        return "✅ Thẻ chọn mẫu thiết kế (có ảnh) đang mở sẵn ở tab Duyệt, anh/chị xem ở đó ạ.".into();
+    }
+    let Some((label, n)) = design_sets(store, p).into_iter().next() else {
+        return "ℹ️ Dự án này chưa có bộ mẫu thiết kế nào để xem lại.".into();
+    };
+    let base = label.split(',').next().unwrap_or(&label).to_string();
+    let designer = store.with(|s| s.employees.iter().find(|e| e.enabled && e.role == Role::Designer).map(|e| e.id.clone())).unwrap_or_else(|| emp.id.clone());
+    let (store, p2, base2) = (store.clone(), p.clone(), base.clone());
+    tokio::spawn(async move {
+        let dir = store.dir_of(&p2);
+        let mut opts = crate::workflow::design_options_at(&dir, &base2);
+        crate::workflow::ensure_shots(&p2, &dir, &mut opts).await;
+        let list: Vec<String> = opts.iter().map(|o| format!("- **{}. {}**", o.id.to_uppercase(), o.title)).collect();
+        if let Ok(a) = store
+            .request_choice(
+                Some(&p2.id),
+                &designer,
+                ApprovalKind::Question,
+                format!("Xem lại mẫu thiết kế \"{}\"", p2.name),
+                format!("Các mẫu thiết kế đã làm ({base2}), mời anh/chị xem ảnh và chọn (có thể ghi góp ý):\n{}", list.join("\n")),
+                opts,
+                &CancellationToken::new(),
+            )
+            .await
+        {
+            if a.status == ApprovalStatus::Answered {
+                follow_up_choice(&store, &a);
+            }
+        }
+    });
+    format!("✅ Đã mở lại {n} mẫu thiết kế (kèm ảnh) ở tab Duyệt để anh/chị xem và chọn.")
+}
+
+/// Sets the people of a project's team from the names given in chat.
+fn set_team(store: &S, p: &Project, names: &[Value]) -> String {
+    let emps = store.with(|s| s.employees.iter().filter(|e| e.enabled && e.role != Role::Maintainer).cloned().collect::<Vec<_>>());
+    let norm = |x: &str| x.trim().to_lowercase();
+    let mut team: Vec<String> = vec![];
+    let mut unknown: Vec<String> = vec![];
+    for n in names.iter().filter_map(Value::as_str) {
+        // "Hà (Designer)" / "Hà" both work.
+        let key = norm(n.split('(').next().unwrap_or(n));
+        match emps.iter().find(|e| norm(&e.name) == key) {
+            Some(e) if !team.contains(&e.id) => team.push(e.id.clone()),
+            Some(_) => {}
+            None => unknown.push(n.to_string()),
+        }
+    }
+    if team.is_empty() {
+        return format!("ℹ️ Không đổi nhóm: không tìm thấy nhân viên nào tên {}.", unknown.join(", "));
+    }
+    store.update_project(&p.id, |p| p.team = team.clone());
+    let names: Vec<String> = team.iter().map(|id| store.display_name(id)).collect();
+    let roles: std::collections::HashSet<Role> = emps.iter().filter(|e| team.contains(&e.id)).map(|e| e.role).collect();
+    let missing: Vec<&str> = [Role::Ba, Role::Pm, Role::Architect, Role::Designer, Role::Dev, Role::Reviewer, Role::Tester, Role::Devops]
+        .into_iter()
+        .filter(|r| !roles.contains(r))
+        .map(config::role_label)
+        .collect();
+    let mut msg = format!("✅ Nhóm dự án \"{}\" giờ có {} người: {}.", p.name, team.len(), names.join(", "));
+    if !missing.is_empty() {
+        msg += &format!(" Vai không có trong nhóm ({}) sẽ mượn người của công ty khi tới bước đó.", missing.join(", "));
+    }
+    if !unknown.is_empty() {
+        msg += &format!(" Không tìm thấy: {}.", unknown.join(", "));
+    }
+    msg
+}
+
 fn scope(project_id: Option<&str>) -> &'static str {
     if project_id.is_some() { " cho dự án này" } else { " cho toàn công ty" }
 }
@@ -392,6 +610,7 @@ mod side_task_tests {
             design_options: 0,
             team: vec![],
             gate_rounds: 0,
+            mode: String::new(),
             meetings: 0,
             tech: String::new(),
             versions: vec![],

@@ -12,6 +12,7 @@ export function ProjectsPanel() {
   const [name, setName] = useState("");
   const [budget, setBudget] = useState("");
   const [srcMode, setSrcMode] = useState<"new" | "zip" | "git" | "local">("new");
+  const [mode, setMode] = useState<"fast" | "full">("fast");
   const [zip, setZip] = useState<File | null>(null);
   const [gitUrl, setGitUrl] = useState("");
   const [localPath, setLocalPath] = useState("");
@@ -41,11 +42,13 @@ export function ProjectsPanel() {
         uploadName: zip?.name ?? "",
         gitUrl: srcMode === "git" ? gitUrl : "",
         localPath: srcMode === "local" ? localPath : "",
+        mode,
       });
       setZip(null);
       setGitUrl("");
       setLocalPath("");
       setSrcMode("new");
+      setMode("fast");
       setRequest("");
       setName("");
       setBudget("");
@@ -91,6 +94,21 @@ export function ProjectsPanel() {
               ] as const
             ).map(([v, l]) => (
               <button key={v} type="button" role="radio" aria-checked={srcMode === v} className={srcMode === v ? "primary" : "ghost"} onClick={() => setSrcMode(v)}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="src-mode">
+          <span className="small">Cách làm</span>
+          <div className="seg" role="radiogroup">
+            {(
+              [
+                ["fast", "⚡ Làm nhanh", "Một kỹ sư giỏi làm liền một mạch, máy tự kiểm tra rồi Tester dùng thử — hợp với trang web nhỏ, công cụ, game đơn giản"],
+                ["full", "🏢 Đủ quy trình", "Họp, đặc tả, thiết kế nhiều mẫu, kiến trúc, review, kiểm thử đầy đủ — hợp với sản phẩm lớn"],
+              ] as const
+            ).map(([v, l, tip]) => (
+              <button key={v} type="button" role="radio" title={tip} aria-checked={mode === v} className={mode === v ? "primary" : "ghost"} onClick={() => setMode(v)}>
                 {l}
               </button>
             ))}

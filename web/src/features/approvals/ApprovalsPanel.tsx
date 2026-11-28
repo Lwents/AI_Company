@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
 import { time } from "@/shared/format";
-import { Markdown, plain } from "@/shared/Markdown";
+import { Markdown } from "@/shared/Markdown";
 import { previewUrl } from "@/shared/runtime";
 import type { Approval } from "@/api/types";
 
@@ -13,7 +13,7 @@ export function ApprovalsPanel() {
   const { state } = useStore();
   if (!state) return null;
   const pending = state.approvals.filter((a) => a.status === "pending");
-  const history = state.approvals.filter((a) => a.status !== "pending").slice(-30).reverse();
+  const history = state.approvals.filter((a) => a.status !== "pending").slice(-60).reverse();
   return (
     <div className="panel-body">
       {pending.length === 0 && <p className="muted center pad">Không có việc nào chờ Chủ tịch duyệt.</p>}
@@ -23,16 +23,53 @@ export function ApprovalsPanel() {
       {history.length > 0 && (
         <section className="card">
           <h3>Lịch sử</h3>
+          <p className="small muted">Bấm vào một mục để xem đầy đủ câu hỏi và câu trả lời.</p>
           {history.map((a) => (
-            <div key={a.id} className="hist small">
-              <span className="muted">{time(a.ts)}</span> <b>{KIND[a.kind]}</b> · {STATUS[a.status]}
-              <div className="mono clip">{plain(a.detail)}</div>
-              {a.answer && <div className="muted">↳ {a.answer}</div>}
-            </div>
+            <HistoryItem key={a.id} a={a} />
           ))}
         </section>
       )}
     </div>
+  );
+}
+
+/** One past request: a one-line summary, the full question / options / answer when opened. */
+function HistoryItem({ a }: { a: Approval }) {
+  const { state } = useStore();
+  const who = a.employeeId === "system" ? "Hệ thống" : (state?.employees.find((e) => e.id === a.employeeId)?.name ?? a.employeeId);
+  const project = a.projectId ? state?.projects.find((x) => x.id === a.projectId)?.name : undefined;
+  const picked = a.answer?.match(/phương án ([a-h])\b/i)?.[1]?.toLowerCase();
+  return (
+    <details className="hist small">
+      <summary>
+        <span className="muted">{time(a.ts)}</span> <b>{KIND[a.kind]}</b> · <span className={`hist-st ${a.status}`}>{STATUS[a.status]}</span> · {who}
+        {project ? ` · ${project}` : ""}
+        <div className="clip">{a.title}</div>
+      </summary>
+      <div className="hist-body">
+        {a.kind === "command" ? <pre className="code">{a.detail}</pre> : <Markdown className="read" text={a.detail} />}
+        {a.options && a.options.length > 0 && a.projectId && (
+          <div className="hist-opts">
+            {a.options.map((o) => (
+              <a key={o.id} className={`hist-opt${o.id === picked ? " on" : ""}`} href={previewUrl(a.projectId!, o.link)} target="_blank" rel="noreferrer" title={o.title}>
+                {shotsOf(o)
+                  .slice(0, 1)
+                  .map((img) => (
+                    <img key={img} src={previewUrl(a.projectId!, img)} alt={o.title} loading="lazy" onError={(e) => (e.currentTarget.style.display = "none")} />
+                  ))}
+                <span>
+                  {o.id.toUpperCase()}. {o.title}
+                  {o.id === picked ? " ✓" : ""}
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+        <div className="hist-answer">
+          <b>Trả lời của Chủ tịch:</b> {a.answer ? <Markdown className="read" text={a.answer} /> : <span className="muted">(không trả lời — {a.status === "denied" ? "bỏ qua / để đội tự quyết" : STATUS[a.status].toLowerCase()})</span>}
+        </div>
+      </div>
+    </details>
   );
 }
 

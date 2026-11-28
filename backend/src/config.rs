@@ -27,6 +27,7 @@ pub fn role_label(r: Role) -> &'static str {
         Role::DataEngineer => "Data Engineer",
         Role::Security => "Security",
         Role::Legal => "Pháp chế",
+        Role::Maintainer => "Bảo trì hệ thống",
     }
 }
 
@@ -49,6 +50,7 @@ pub fn role_duty(r: Role) -> &'static str {
         Role::Security => "Bạn là Kỹ sư bảo mật (Security Engineer). Bạn tìm lỗ hổng trong code và thư viện, bí mật bị lộ, cấu hình không an toàn, kiểm theo OWASP Top 10, đề xuất cách sửa cụ thể và có quyền chặn phát hành khi có lỗi nghiêm trọng.",
         Role::DataEngineer => "Bạn là Data Engineer. Bạn thiết kế mô hình dữ liệu (thực thể, trường, kiểu, ràng buộc, quan hệ), cách lưu trữ, kiểm tra hợp lệ dữ liệu, phiên bản schema và chuyển đổi dữ liệu khi nâng cấp, sao lưu / khôi phục, bảo vệ dữ liệu cá nhân, và các chỉ số cần đo. Bạn ưu tiên giải pháp đơn giản nhất mà không làm mất dữ liệu.",
         Role::Accountant => "Bạn là Kế toán. Bạn lập báo cáo thu – chi – lãi lỗ chính xác từ số liệu thật của công ty, chỉ ra khoản tốn kém và đề xuất tiết kiệm.",
+        Role::Maintainer => "Bạn là nhân viên Bảo trì hệ thống: sửa chính mã nguồn AI Company bằng Claude CLI, commit và push lên git để server tự cập nhật.",
         Role::Legal => "Bạn là chuyên viên Pháp chế. Bạn soạn điều khoản sử dụng, chính sách bảo mật dễ hiểu, phù hợp pháp luật Việt Nam, và cảnh báo rủi ro pháp lý trong nội dung quảng cáo.",
     }
 }
@@ -95,6 +97,11 @@ pub fn known_price(model: &str) -> (f64, f64) {
         "claude-opus-5-5" => (4.0, 20.0),
         "claude-sonnet-5-5" => (2.0, 10.0),
         "claude-haiku-5-5" => (0.10, 0.50),
+        // The same Claude models through proxies (9router "ag/claude-opus-5-5-high"…).
+        m if m.contains("claude-fable-5-2") => (8.0, 40.0),
+        m if m.contains("claude-opus-5-5") => (4.0, 20.0),
+        m if m.contains("claude-sonnet-5-5") => (2.0, 10.0),
+        m if m.contains("claude-haiku-5-5") => (0.10, 0.50),
         // Gemini 4 family (also via proxies such as 9router "ag/…"): Google list prices.
         m if m.contains("gemini-4-neon") => (3.0, 15.0),
         m if m.contains("gemini-4-carbon") || m.contains("gemini-4-argon") => (2.0, 10.0),

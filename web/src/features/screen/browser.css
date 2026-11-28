@@ -302,3 +302,109 @@
   color: #b06000;
   font-weight: 600;
 }
+
+/* Phones: the monitor fills what is left of the screen and the editor scrolls inside it
+   (without these the editor grew as tall as the file, pushing the status bar off screen). */
+@media (max-width: 760px), (max-height: 520px) {
+  .screen-body,
+  .monitor,
+  .desktop,
+  .desk-area,
+  .vsc,
+  .vsc-main,
+  .vsc-editor,
+  .chrome {
+    min-height: 0;
+  }
+  .monitor {
+    flex: 1 1 0;
+  }
+  .vsc .vsc-side,
+  .vsc-menu,
+  .vsc-nav,
+  .vsc-win {
+    display: none;
+  }
+  .vsc-activity {
+    width: 34px;
+  }
+  .vsc-activity > span {
+    width: 34px;
+    height: 34px;
+  }
+  .vsc .vsc-status span:nth-child(n + 4):not(:nth-last-child(2)) {
+    display: none;
+  }
+  .vsc-panel-tabs span:not(.grow) {
+    display: none;
+  }
+  .screen-body {
+    position: relative;
+  }
+  .screen-chat {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 62%;
+    width: auto;
+    z-index: 5;
+    box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* Phones held sideways: very little height, so the top bar and panels get compact. */
+@media (max-height: 520px) {
+  .screen-overlay {
+    padding: 0;
+  }
+  .screen-shell {
+    height: 100%;
+    padding: 4px 6px;
+    gap: 4px;
+    border: none;
+  }
+  .screen-top .small,
+  .screen-people {
+    display: none;
+  }
+  .screen-top button {
+    min-height: 32px;
+    padding: 0 10px;
+  }
+  .monitor {
+    padding: 4px;
+  }
+  .desk-area {
+    padding: 4px;
+  }
+  .vsc-titlebar {
+    height: 26px;
+  }
+  .vsc-tabs .tab {
+    height: 28px;
+  }
+  .vsc-crumbs {
+    display: none;
+  }
+  .vsc-panel {
+    height: 32%;
+    min-height: 60px;
+  }
+  .vsc .vsc-code {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .vsc .ln {
+    min-height: 16px;
+  }
+  .taskbar {
+    padding: 2px 6px;
+  }
+  .taskbar button {
+    min-height: 28px;
+  }
+  .tb-clock {
+    display: none;
+  }
+}

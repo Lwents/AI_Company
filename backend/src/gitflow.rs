@@ -46,6 +46,8 @@ pub async fn prepare(store: &S, p: &Project) {
     let l = lock(&p.id);
     let _g = l.lock().await;
     if !dir.join(".git").exists() {
+        // A brand-new project has no folder yet: create it so git can start tracking from the first file.
+        let _ = std::fs::create_dir_all(&dir);
         if let Err(e) = git(&dir, &["init", "-q", "-b", "main"]).await {
             store.log_activity("system", Some(&p.id), "error", format!("git init: {e}"));
             return;
