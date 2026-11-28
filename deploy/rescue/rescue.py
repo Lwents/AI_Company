@@ -402,37 +402,42 @@ PAGE = r"""<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <title>Cứu hộ AI Company</title><link rel="stylesheet" href="static/xterm.css">
 <style>
 :root{--bg:#0c0c0c;--bar:#161616;--line:#2b2b2b;--ink:#e6e6e6;--dim:#8a8a8a;--ok:#4ec98a;--bad:#ff6b6b;--acc:#e07a4f}
-*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Cascadia Mono",Consolas,ui-monospace,monospace}
+*{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;position:fixed;inset:0;width:100%;overscroll-behavior:none;background:var(--bg);color:var(--ink);font:14px/1.45 "Cascadia Mono",Consolas,ui-monospace,monospace}
 body{display:flex;flex-direction:column;height:100dvh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-header{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bar);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bar);border-bottom:1px solid var(--line);flex-wrap:wrap;flex:none}
 header b{font-size:15px}.grow{flex:1}
 .pill{padding:2px 8px;border-radius:99px;font-size:12px;background:#333}.pill.ok{background:#173d2a;color:var(--ok)}.pill.bad{background:#4a1d22;color:var(--bad)}
-button,.btn{background:#222;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;min-height:36px;padding:0 10px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+button,.btn{background:#222;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;min-height:34px;padding:0 10px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 button:active{background:#333}.tabs{display:flex;gap:4px}.tabs button[aria-selected=true]{background:#2d3b55;border-color:#4a6496}
+.imgbtn{background:#243248;border-color:#3c547a}
 main{flex:1;min-height:0;display:flex;flex-direction:column}
+#stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 #term{flex:1;min-height:0;overflow:hidden;padding:6px 4px 2px 8px}#term .xterm{height:100%}#term .xterm-viewport{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}#term .xterm-helper-textarea{pointer-events:none}
+#jump{position:absolute;right:12px;bottom:10px;z-index:5;background:#243248;border-color:#4a6496;border-radius:99px;box-shadow:0 4px 14px rgba(0,0,0,.5);font-size:12px;min-height:32px;padding:0 12px}
+#jump[hidden],.keys[hidden]{display:none}
 .keys{display:flex;gap:4px;padding:4px 8px;overflow-x:auto;border-top:1px solid var(--line);flex:none}
 .keys button{min-height:34px;white-space:nowrap}
 .line{display:flex;gap:6px;padding:4px 8px 8px;flex:none}.line input{flex:1;min-width:0;background:#141414;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;font-size:16px;padding:6px 8px}
-#st{overflow:auto;padding:12px;display:none}#st.on{display:block}#st .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+#st{overflow:auto;padding:12px;display:none;flex:1;min-height:0}#st.on{display:block}#st .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 pre{background:#111;border:1px solid var(--line);border-radius:6px;padding:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:50vh;overflow:auto}
 .dim{color:var(--dim)}.ok{color:var(--ok)}.bad{color:var(--bad)}a{color:#7fa8ff}
 @media (max-width:600px){header .hide-s{display:none}html,body{font-size:13px}}
 </style></head><body>
 <header><b>🛟 Cứu hộ</b><span id="pill" class="pill">…</span><span class="grow"></span>
+<button id="imgh" type="button" class="imgbtn" title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)">Gửi ảnh</button>
 <div class="tabs"><button id="t1" aria-selected="true">Claude CLI</button><button id="t2" aria-selected="false">Tình trạng</button></div>
 <a class="btn hide-s" href="/">Trang chính</a></header>
-<main><div id="tw" style="display:flex;flex-direction:column;flex:1;min-height:0"><div id="term"></div>
+<main><div id="tw" style="display:flex;flex-direction:column;flex:1;min-height:0"><div id="stage"><div id="term"></div><button id="jump" type="button" hidden>↓ Xuống cuối</button></div>
 <input id="imgf" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
 <div class="keys" id="keys"></div>
-<div class="line" id="line" hidden><button id="imgb" type="button">Ảnh</button><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
+<div class="line" id="line" hidden><button id="imgb" type="button" class="imgbtn">Ảnh</button><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
 <section id="st"><div id="sum" class="dim">Đang kiểm tra…</div>
 <div class="row"><button id="re">🔄 Khởi động lại hệ thống chính</button><button id="rb">⏪ Quay về bản trước</button><a class="btn" href="/">← Trang chính</a></div>
 <p class="dim">Bản lỗi bị đẩy lên? Bấm "Quay về bản trước" để chạy lại ngay, rồi nhắn Khôi ở tab Claude CLI xem log và sửa.</p>
 <details open><summary>Log hệ thống chính</summary><pre id="logs"></pre></details><details><summary>Commit gần nhất</summary><pre id="commits"></pre></details></section></main>
 <script src="static/xterm.js"></script><script src="static/addon-fit.js"></script>
 <script>
-const $=id=>document.getElementById(id);const touch=matchMedia("(pointer: coarse)").matches;
+const $=id=>document.getElementById(id);const touch=matchMedia("(any-pointer: coarse)").matches||navigator.maxTouchPoints>0;
 const H={"Content-Type":"application/json","X-Rescue":"1"};const post=u=>fetch("api/"+u,{method:"POST",headers:H,body:"{}"}).then(r=>r.json());
 function tab(n){$("t1").setAttribute("aria-selected",n===1);$("t2").setAttribute("aria-selected",n===2);$("tw").style.display=n===1?"flex":"none";$("st").classList.toggle("on",n===2);if(n===1){fit()}else refresh()}
 $("t1").onclick=()=>tab(1);$("t2").onclick=()=>tab(2);
@@ -445,18 +450,24 @@ const term=new Terminal({cursorBlink:true,fontFamily:'"Cascadia Mono",Consolas,"
 const fa=new FitAddon.FitAddon();term.loadAddon(fa);term.open($("term"));
 if(touch&&term.textarea){term.textarea.setAttribute("readonly","readonly");term.textarea.setAttribute("inputmode","none");term.textarea.tabIndex=-1}
 term.parser.registerCsiHandler({final:"J"},p=>{if(p[0]===2)term.clear();return false});
-let sent="",fitT=null;
-function fit(){try{const atB=term.buffer.active.viewportY>=term.buffer.active.baseY-1;fa.fit();if(atB)term.scrollToBottom()}catch(e){}const sz=term.cols+"x"+term.rows;if(sz!==sent&&ws&&ws.readyState===1){sent=sz;ws.send(JSON.stringify({type:"resize",cols:term.cols,rows:term.rows}))}}
-let ws=null;function send(d){if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"input",data:d}))}
+let stick=true,typing=false,sent="",fitT=null;
+const atBottom=()=>term.buffer.active.viewportY>=term.buffer.active.baseY-2;
+function syncJump(){const a=atBottom();stick=a;$("jump").hidden=a||term.buffer.active.baseY<=0}
+term.onScroll(syncJump);
+function jumpBottom(){stick=true;$("jump").hidden=true;term.scrollToBottom()}
+$("jump").onpointerdown=e=>e.preventDefault();$("jump").onclick=jumpBottom;
+function fit(){try{fa.fit();if(stick){term.scrollToBottom();requestAnimationFrame(()=>{if(stick)term.scrollToBottom()})}}catch(e){}if(touch&&typing)return;const sz=term.cols+"x"+term.rows;if(sz!==sent&&ws&&ws.readyState===1){sent=sz;ws.send(JSON.stringify({type:"resize",cols:term.cols,rows:term.rows}))}}
+let ws=null;function send(d){stick=true;$("jump").hidden=true;if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"input",data:d}))}
 function connect(){ws=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/rescue/pty?cols="+term.cols+"&rows="+term.rows);ws.binaryType="arraybuffer";
-ws.onopen=()=>{term.reset();sent="";fit()};ws.onmessage=m=>term.write(typeof m.data==="string"?m.data:new Uint8Array(m.data));ws.onclose=()=>{term.write("\r\n\x1b[2m[mất kết nối, đang nối lại…]\x1b[0m\r\n");setTimeout(connect,2000)}}
+ws.onopen=()=>{stick=true;$("jump").hidden=true;term.reset();sent="";fit()};ws.onmessage=m=>{const done=()=>{if(stick)term.scrollToBottom();else syncJump()};term.write(typeof m.data==="string"?m.data:new Uint8Array(m.data),done)};ws.onclose=()=>{term.write("\r\n\x1b[2m[mất kết nối, đang nối lại…]\x1b[0m\r\n");setTimeout(connect,2000)}}
 term.onData(send);new ResizeObserver(()=>{clearTimeout(fitT);fitT=setTimeout(fit,120)}).observe($("term"));fit();connect();
-async function uploadImg(f){if(!f)return;try{const r=await fetch("api/upload",{method:"POST",headers:{"Content-Type":f.type||"application/octet-stream","X-Rescue":"1"},body:f});if(!r.ok){alert(await r.text()||"Không tải ảnh lên được");return}const d=await r.json();if(!d.path)return;if(touch){const i=$("li");i.value=i.value?i.value.trimEnd()+" "+d.path+" ":d.path+" ";i.focus()}else{send(d.path+" ");term.focus()}}catch(e){alert("Lỗi mạng khi gửi ảnh")}}
+async function uploadImg(f){if(!f)return;const hb=$("imgh"),mb=$("imgb");hb.disabled=true;mb.disabled=true;hb.textContent="Đang tải…";try{const r=await fetch("api/upload",{method:"POST",headers:{"Content-Type":f.type||"application/octet-stream","X-Rescue":"1"},body:f});if(!r.ok){alert(await r.text()||"Không tải ảnh lên được");return}const d=await r.json();if(!d.path)return;if(touch){const i=$("li");i.value=i.value?i.value.trimEnd()+" "+d.path+" ":d.path+" ";i.focus()}else{send(d.path+" ");term.focus()}}catch(e){alert("Lỗi mạng khi gửi ảnh")}finally{hb.disabled=false;mb.disabled=false;hb.textContent="Gửi ảnh"}}
+$("imgh").onpointerdown=e=>e.preventDefault();$("imgh").onclick=()=>$("imgf").click();
 $("imgf").onchange=e=>{const f=e.target.files&&e.target.files[0];e.target.value="";if(f)uploadImg(f)};
 window.addEventListener("paste",e=>{const it=e.clipboardData&&e.clipboardData.items;if(!it)return;for(const x of it){if(x.type.startsWith("image/")){const f=x.getAsFile();if(f){e.preventDefault();uploadImg(f);break}}}});
-if(!touch){const b=document.createElement("button");b.textContent="Gửi ảnh";b.onpointerdown=e=>e.preventDefault();b.onclick=()=>$("imgf").click();$("keys").appendChild(b)}
+const jb=document.createElement("button");jb.textContent="↓ Cuối";jb.onpointerdown=e=>e.preventDefault();jb.onclick=jumpBottom;$("keys").appendChild(jb);
 [["Esc","\x1b"],["Tab","\t"],["⇧Tab","\x1b[Z"],["↑","\x1b[A"],["↓","\x1b[B"],["←","\x1b[D"],["→","\x1b[C"],["Ctrl+C","\x03"],["⏎","\r"]].forEach(([l,s])=>{const b=document.createElement("button");b.textContent=l;b.onpointerdown=e=>e.preventDefault();b.onclick=()=>{send(s);if(!touch)term.focus()};$("keys").appendChild(b)});
-if(touch){$("line").hidden=false;$("imgb").onclick=()=>$("imgf").click();const go=()=>{const v=$("li").value;if(!v.trim())return;send(v);setTimeout(()=>send("\r"),30);$("li").value=""};$("lb").onclick=go;$("li").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();go()}});if(window.visualViewport){const sv=()=>{document.body.style.height=Math.round(visualViewport.height)+"px"};sv();visualViewport.addEventListener("resize",sv)}}else term.focus();
+if(touch){$("line").hidden=false;$("imgb").onpointerdown=e=>e.preventDefault();$("imgb").onclick=()=>$("imgf").click();const go=()=>{const v=$("li").value;if(!v.trim())return;send(v);setTimeout(()=>send("\r"),30);$("li").value=""};$("lb").onpointerdown=e=>e.preventDefault();$("lb").onclick=go;$("li").addEventListener("focus",()=>{typing=true;$("keys").hidden=true;jumpBottom();setTimeout(jumpBottom,180)});$("li").addEventListener("blur",()=>{typing=false;$("keys").hidden=false});$("li").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();go()}});if(window.visualViewport){const sv=()=>{document.body.style.height=Math.round(visualViewport.height)+"px";document.body.style.transform="translate3d(0,"+Math.round(visualViewport.offsetTop)+"px,0)";if(stick)requestAnimationFrame(()=>term.scrollToBottom())};sv();visualViewport.addEventListener("resize",sv);visualViewport.addEventListener("scroll",sv)}}else term.focus();
 if(location.hash==="#status")tab(2);refresh();setInterval(refresh,8000);
 </script></body></html>"""
 
