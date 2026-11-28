@@ -308,16 +308,6 @@ export function Terminal({
                   : "mất kết nối, đang nối lại…"}
         </span>
         <button
-          type="button"
-          className="term-img-btn"
-          disabled={uploading}
-          onPointerDown={(ev) => ev.preventDefault()}
-          onClick={() => fileRef.current?.click()}
-          title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
-        >
-          {uploading ? "Đang tải…" : "Gửi ảnh"}
-        </button>
-        <button
           className="term-close"
           onClick={onClose}
           aria-label="Đóng (phiên CLI vẫn chạy trên máy chủ)"
@@ -351,6 +341,17 @@ export function Terminal({
       </div>
       {!(touch && typing) && (
         <div className="term-keys">
+          {!touch && (
+            <button
+              type="button"
+              disabled={uploading}
+              onPointerDown={(ev) => ev.preventDefault()}
+              onClick={() => fileRef.current?.click()}
+              title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
+            >
+              {uploading ? "Đang tải…" : "Ảnh"}
+            </button>
+          )}
           <button
             type="button"
             onPointerDown={(ev) => ev.preventDefault()}

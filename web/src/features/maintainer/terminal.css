@@ -48,18 +48,6 @@
 .term-led.off {
   background: #ff6b6b;
 }
-.term-img-btn {
-  background: #243248;
-  color: var(--t-ink);
-  border: 1px solid #3c547a;
-  box-shadow: none;
-  font: inherit;
-  font-size: 12px;
-  min-height: 28px;
-  padding: 0 8px;
-  white-space: nowrap;
-  cursor: pointer;
-}
 .term-close {
   background: transparent;
   border: 0;
