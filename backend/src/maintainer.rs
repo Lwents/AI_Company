@@ -166,6 +166,8 @@ fn command(dir: &Path, text: &str, session: Option<&str>, emp: &Employee) -> tok
         cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &m).env("ANTHROPIC_SMALL_FAST_MODEL", &m);
     }
     cmd.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+    // The server CPU lacks SSE4.2; newer (native) Claude CLI builds won't run there, so never auto-update.
+    cmd.env("DISABLE_AUTOUPDATER", "1");
     let who = format!("{} (Bảo trì AI Company)", emp.name);
     cmd.env("GIT_AUTHOR_NAME", &who).env("GIT_COMMITTER_NAME", &who).env("GIT_AUTHOR_EMAIL", "maintainer@ai-company.local").env("GIT_COMMITTER_EMAIL", "maintainer@ai-company.local");
     #[cfg(windows)]
