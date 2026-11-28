@@ -236,31 +236,49 @@ export function Terminal({
   }, [touch, embedded]);
 
   if (!e) return null;
-  const uploadImage = async (file: File) => {
+  const safeHeaderName = (name: string) =>
+    name
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .replace(/^[._]+/, "")
+      .slice(-80);
+  const uploadFiles = async (files: File[]) => {
+    if (!files.length) return;
     setUploadErr("");
     setUploading(true);
+    const paths: string[] = [];
     try {
-      const res = await fetch("/api/maintainer/upload", {
-        method: "POST",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file,
-      });
-      if (!res.ok) {
-        const msg = await res.text().catch(() => "");
-        setUploadErr(msg || "Không tải ảnh lên được");
-        return;
+      for (const file of files) {
+        const headers: Record<string, string> = {
+          "Content-Type": file.type || "application/octet-stream",
+        };
+        const fn = safeHeaderName(file.name || "");
+        if (fn) headers["X-Filename"] = fn;
+        const res = await fetch("/api/maintainer/upload", {
+          method: "POST",
+          headers,
+          body: file,
+        });
+        if (!res.ok) {
+          const msg = await res.text().catch(() => "");
+          setUploadErr(msg || `Không tải tệp ${file.name} lên được`);
+          break;
+        }
+        const data = (await res.json()) as { path?: string };
+        if (data.path) paths.push(data.path);
       }
-      const data = (await res.json()) as { path?: string };
-      if (!data.path) return;
+      if (!paths.length) return;
+      const joined = paths.join(" ");
       if (touch) {
-        setLine((prev) => (prev ? `${prev.trimEnd()} ${data.path} ` : `${data.path} `));
+        setLine((prev) => (prev ? `${prev.trimEnd()} ${joined} ` : `${joined} `));
         inputRef.current?.focus();
       } else {
-        sendRef.current(`${data.path} `);
+        sendRef.current(`${joined} `);
         termRef.current?.focus();
       }
     } catch {
-      setUploadErr("Lỗi mạng khi gửi ảnh");
+      setUploadErr("Lỗi mạng khi gửi tệp");
     } finally {
       setUploading(false);
     }
@@ -278,29 +296,22 @@ export function Terminal({
       role="dialog"
       aria-label={`Claude CLI của ${e.name}`}
       onPaste={(ev) => {
-        const items = ev.clipboardData?.items;
-        if (!items) return;
-        for (const item of items) {
-          if (item.type.startsWith("image/")) {
-            const f = item.getAsFile();
-            if (f) {
-              ev.preventDefault();
-              void uploadImage(f);
-              break;
-            }
-          }
+        const files = Array.from(ev.clipboardData?.files ?? []);
+        if (files.length) {
+          ev.preventDefault();
+          void uploadFiles(files);
         }
       }}
     >
       <input
         ref={fileRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
+        multiple
         hidden
         onChange={(ev) => {
-          const f = ev.target.files?.[0];
+          const files = Array.from(ev.target.files ?? []);
           ev.target.value = "";
-          if (f) void uploadImage(f);
+          if (files.length) void uploadFiles(files);
         }}
       />
       <div className="term-bar">
@@ -312,7 +323,7 @@ export function Terminal({
           {uploadErr
             ? uploadErr
             : uploading
-              ? "đang gửi ảnh…"
+              ? "đang gửi tệp…"
               : status === "on"
                 ? "đã kết nối"
                 : status === "connecting"
@@ -359,9 +370,9 @@ export function Terminal({
               disabled={uploading}
               onPointerDown={(ev) => ev.preventDefault()}
               onClick={() => fileRef.current?.click()}
-              title="Chọn ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
+              title="Chọn một hoặc nhiều tệp/ảnh gửi vào đoạn chat (hoặc Ctrl+V để dán)"
             >
-              {uploading ? "Đang tải…" : "Ảnh"}
+              {uploading ? "Đang tải…" : "Tệp"}
             </button>
           )}
           <button
@@ -398,10 +409,10 @@ export function Terminal({
             disabled={uploading}
             onPointerDown={(ev) => ev.preventDefault()}
             onClick={() => fileRef.current?.click()}
-            aria-label="Gửi ảnh"
-            title="Chọn ảnh gửi vào đoạn chat"
+            aria-label="Gửi tệp"
+            title="Chọn một hoặc nhiều tệp/ảnh gửi vào đoạn chat"
           >
-            {uploading ? "…" : "Ảnh"}
+            {uploading ? "…" : "Tệp"}
           </button>
           <input
             ref={inputRef}

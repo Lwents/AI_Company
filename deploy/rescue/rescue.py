@@ -427,9 +427,9 @@ pre{background:#111;border:1px solid var(--line);border-radius:6px;padding:8px;w
 <div class="tabs"><button id="t1" aria-selected="true">Claude CLI</button><button id="t2" aria-selected="false">Tình trạng</button></div>
 <a class="btn hide-s" href="/">Trang chính</a></header>
 <main><div id="tw" style="display:flex;flex-direction:column;flex:1;min-height:0"><div id="stage"><div id="term"></div><button id="jump" type="button" hidden>↓ Xuống cuối</button></div>
-<input id="imgf" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+<input id="imgf" type="file" multiple hidden>
 <div class="keys" id="keys"></div>
-<div class="line" id="line" hidden><button id="imgb" type="button" class="imgbtn">Ảnh</button><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
+<div class="line" id="line" hidden><button id="imgb" type="button" class="imgbtn">Tệp</button><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
 <section id="st"><div id="sum" class="dim">Đang kiểm tra…</div>
 <div class="row"><button id="re">🔄 Khởi động lại hệ thống chính</button><button id="rb">⏪ Quay về bản trước</button><a class="btn" href="/">← Trang chính</a></div>
 <p class="dim">Bản lỗi bị đẩy lên? Bấm "Quay về bản trước" để chạy lại ngay, rồi nhắn Khôi ở tab Claude CLI xem log và sửa.</p>
@@ -460,10 +460,11 @@ let ws=null;function send(d){stick=true;$("jump").hidden=true;if(ws&&ws.readySta
 function connect(){ws=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/rescue/pty?cols="+term.cols+"&rows="+term.rows);ws.binaryType="arraybuffer";
 ws.onopen=()=>{stick=true;$("jump").hidden=true;term.reset();sent="";fit()};ws.onmessage=m=>{const done=()=>{if(stick)term.scrollToBottom();else syncJump()};term.write(typeof m.data==="string"?m.data:new Uint8Array(m.data),done)};ws.onclose=()=>{term.write("\r\n\x1b[2m[mất kết nối, đang nối lại…]\x1b[0m\r\n");setTimeout(connect,2000)}}
 term.onData(send);new ResizeObserver(()=>{clearTimeout(fitT);fitT=setTimeout(fit,120)}).observe($("term"));fit();connect();
-async function uploadImg(f){if(!f)return;const mb=$("imgb");if(mb){mb.disabled=true;mb.textContent="…"}try{const r=await fetch("api/upload",{method:"POST",headers:{"Content-Type":f.type||"application/octet-stream","X-Rescue":"1"},body:f});if(!r.ok){alert(await r.text()||"Không tải ảnh lên được");return}const d=await r.json();if(!d.path)return;if(touch){const i=$("li");i.value=i.value?i.value.trimEnd()+" "+d.path+" ":d.path+" ";i.focus()}else{send(d.path+" ");term.focus()}}catch(e){alert("Lỗi mạng khi gửi ảnh")}finally{if(mb){mb.disabled=false;mb.textContent="Ảnh"}}}
-$("imgf").onchange=e=>{const f=e.target.files&&e.target.files[0];e.target.value="";if(f)uploadImg(f)};
-window.addEventListener("paste",e=>{const it=e.clipboardData&&e.clipboardData.items;if(!it)return;for(const x of it){if(x.type.startsWith("image/")){const f=x.getAsFile();if(f){e.preventDefault();uploadImg(f);break}}}});
-if(!touch){const ib=document.createElement("button");ib.textContent="Ảnh";ib.className="imgbtn";ib.onpointerdown=e=>e.preventDefault();ib.onclick=()=>$("imgf").click();$("keys").appendChild(ib)}
+const safeName=s=>(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-zA-Z0-9._-]+/g,"_").replace(/^[._]+/,"").slice(-80);
+async function uploadFiles(files){if(!files||!files.length)return;const mb=$("imgb");if(mb){mb.disabled=true;mb.textContent="…"}const paths=[];try{for(const f of files){const h={"Content-Type":f.type||"application/octet-stream","X-Rescue":"1"};const fn=safeName(f.name);if(fn)h["X-Filename"]=fn;const r=await fetch("api/upload",{method:"POST",headers:h,body:f});if(!r.ok){alert(await r.text()||"Không tải tệp lên được");break}const d=await r.json();if(d.path)paths.push(d.path)}if(!paths.length)return;const j=paths.join(" ");if(touch){const i=$("li");i.value=i.value?i.value.trimEnd()+" "+j+" ":j+" ";i.focus()}else{send(j+" ");term.focus()}}catch(e){alert("Lỗi mạng khi gửi tệp")}finally{if(mb){mb.disabled=false;mb.textContent="Tệp"}}}
+$("imgf").onchange=e=>{const fs=Array.from(e.target.files||[]);e.target.value="";if(fs.length)uploadFiles(fs)};
+window.addEventListener("paste",e=>{const fs=Array.from((e.clipboardData&&e.clipboardData.files)||[]);if(fs.length){e.preventDefault();uploadFiles(fs)}});
+if(!touch){const ib=document.createElement("button");ib.textContent="Tệp";ib.className="imgbtn";ib.onpointerdown=e=>e.preventDefault();ib.onclick=()=>$("imgf").click();$("keys").appendChild(ib)}
 const jb=document.createElement("button");jb.textContent="↓ Cuối";jb.onpointerdown=e=>e.preventDefault();jb.onclick=jumpBottom;$("keys").appendChild(jb);
 [["Esc","\x1b"],["Tab","\t"],["⇧Tab","\x1b[Z"],["↑","\x1b[A"],["↓","\x1b[B"],["←","\x1b[D"],["→","\x1b[C"],["Ctrl+C","\x03"],["⏎","\r"]].forEach(([l,s])=>{const b=document.createElement("button");b.textContent=l;b.onpointerdown=e=>e.preventDefault();b.onclick=()=>{send(s);if(!touch)term.focus()};$("keys").appendChild(b)});
 if(touch){$("line").hidden=false;$("imgb").onpointerdown=e=>e.preventDefault();$("imgb").onclick=()=>$("imgf").click();const go=()=>{const v=$("li").value;if(!v.trim())return;send(v);setTimeout(()=>send("\r"),30);$("li").value=""};$("lb").onpointerdown=e=>e.preventDefault();$("lb").onclick=go;$("li").addEventListener("focus",()=>{typing=true;$("keys").hidden=true;jumpBottom();setTimeout(jumpBottom,180)});$("li").addEventListener("blur",()=>{typing=false;$("keys").hidden=false});$("li").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();go()}});if(window.visualViewport){const sv=()=>{document.body.style.height=Math.round(visualViewport.height)+"px";document.body.style.transform="translate3d(0,"+Math.round(visualViewport.offsetTop)+"px,0)";if(stick)requestAnimationFrame(()=>term.scrollToBottom())};sv();visualViewport.addEventListener("resize",sv);visualViewport.addEventListener("scroll",sv)}}else term.focus();
@@ -638,20 +639,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self.j({"error": "Chưa đăng nhập"}, 401)
             n = int(self.headers.get("Content-Length") or 0)
             if n <= 0 or n > 20_000_000:
-                return self.j({"error": "Ảnh quá lớn (tối đa 20 MB)"}, 400)
+                return self.j({"error": "Tệp rỗng hoặc quá lớn (tối đa 20 MB)"}, 400)
             raw = self.rfile.read(n)
-            ext = (
-                "png" if raw.startswith(b"\x89PNG\r\n\x1a\n")
-                else "jpg" if raw.startswith(b"\xff\xd8\xff")
-                else "gif" if raw.startswith((b"GIF87a", b"GIF89a"))
-                else "webp" if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
-                else ""
-            )
-            if not ext:
-                return self.j({"error": "Chỉ nhận ảnh PNG, JPG, GIF hoặc WebP"}, 400)
+            raw_name = (self.headers.get("X-Filename") or "").replace("\\", "/").rsplit("/", 1)[-1]
+            safe = "".join(c if (c.isascii() and (c.isalnum() or c in ".-_")) else "_" for c in raw_name).lstrip("._")
+            while ".." in safe:
+                safe = safe.replace("..", ".")
+            safe = safe[-80:]
+            if safe:
+                fname = f"{secrets.token_hex(6)}-{safe}"
+            else:
+                ext = (
+                    "png" if raw.startswith(b"\x89PNG\r\n\x1a\n")
+                    else "jpg" if raw.startswith(b"\xff\xd8\xff")
+                    else "gif" if raw.startswith((b"GIF87a", b"GIF89a"))
+                    else "webp" if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+                    else "bin"
+                )
+                fname = f"file-{secrets.token_hex(6)}.{ext}"
             updir = os.path.join(DATA, "uploads", "chat")
             os.makedirs(updir, exist_ok=True)
-            path = os.path.join(updir, f"img-{secrets.token_hex(6)}.{ext}")
+            path = os.path.join(updir, fname)
             with open(path, "wb") as f:
                 f.write(raw)
             return self.j({"path": path, "size": len(raw)})

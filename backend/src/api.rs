@@ -614,21 +614,57 @@ async fn maintainer_info(State(store): State<S>) -> ApiResult {
     Ok(Json(crate::maintainer::info(&store).await))
 }
 
-async fn maintainer_upload(State(store): State<S>, body: axum::body::Bytes) -> ApiResult {
-    let ext = if body.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "png"
-    } else if body.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "jpg"
-    } else if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
-        "gif"
-    } else if body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP" {
-        "webp"
+async fn maintainer_upload(
+    State(store): State<S>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    if body.is_empty() {
+        return Err(bad("Tệp rỗng"));
+    }
+    let raw_name = headers
+        .get("x-filename")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let base = raw_name.rsplit(['/', '\\']).next().unwrap_or("");
+    let mut safe: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while safe.starts_with('.') || safe.starts_with('_') {
+        safe.remove(0);
+    }
+    while safe.contains("..") {
+        safe = safe.replace("..", ".");
+    }
+    if safe.len() > 80 {
+        safe = safe[safe.len() - 80..].to_string();
+    }
+    let file_name = if !safe.is_empty() {
+        format!("{}-{safe}", new_id())
     } else {
-        return Err(bad("Chỉ nhận ảnh PNG, JPG, GIF hoặc WebP"));
+        let ext = if body.starts_with(b"\x89PNG\r\n\x1a\n") {
+            "png"
+        } else if body.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            "jpg"
+        } else if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
+            "gif"
+        } else if body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP" {
+            "webp"
+        } else {
+            "bin"
+        };
+        format!("file-{}.{ext}", new_id())
     };
     let dir = store.data_dir.join("uploads").join("chat");
     tokio::fs::create_dir_all(&dir).await.map_err(|e| bad(e.to_string()))?;
-    let path = dir.join(format!("img-{}.{ext}", new_id()));
+    let path = dir.join(file_name);
     tokio::fs::write(&path, &body).await.map_err(|e| bad(e.to_string()))?;
     Ok(Json(json!({ "path": path.to_string_lossy(), "size": body.len() })))
 }
