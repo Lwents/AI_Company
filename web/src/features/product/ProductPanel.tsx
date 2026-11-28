@@ -109,6 +109,7 @@ export function ProductPanel() {
   const { state, selectedProject } = useStore();
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [dir, setDir] = useState("");
+  const [serverHasPreview, setServerHasPreview] = useState(false);
   const [filter, setFilter] = useState("");
   const [hideHidden, setHideHidden] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -124,10 +125,14 @@ export function ProductPanel() {
   const tick = Math.floor((state?.activity.filter((a) => a.projectId === selectedProject && a.kind === "result").length ?? 0) / 5);
 
   useEffect(() => {
+    setFiles([]);
+    setDir("");
+    setServerHasPreview(false);
     setOpen(null);
     setFileData(null);
     setFilter("");
     setExpanded(new Set());
+    setNonce(Date.now());
     lastListFetch.current = 0;
   }, [selectedProject]);
 
@@ -136,12 +141,23 @@ export function ProductPanel() {
     const now = Date.now();
     if (lastListFetch.current > 0 && now - lastListFetch.current < 6000) return;
     lastListFetch.current = now;
-    api<{ dir: string; files: FileInfo[] }>("GET", `/api/projects/${selectedProject}/files`)
+    let cancelled = false;
+    api<{ dir: string; files: FileInfo[]; hasPreview?: boolean }>("GET", `/api/projects/${selectedProject}/files`)
       .then((r) => {
+        if (cancelled) return;
         setFiles(r.files);
         setDir(r.dir);
+        setServerHasPreview(Boolean(r.hasPreview));
       })
-      .catch(() => setFiles([]));
+      .catch(() => {
+        if (!cancelled) {
+          setFiles([]);
+          setServerHasPreview(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedProject, tick, reloadNonce]);
 
   useEffect(() => {
@@ -234,9 +250,22 @@ export function ProductPanel() {
   }
 
   if (!project) return <p className="muted center pad">Chọn một dự án ở tab Dự án.</p>;
-  const hasIndex = files.some(
-    (f) => f.path === "index.html" || f.path === "frontend/index.html" || f.path === "frontend/dist/index.html"
-  );
+  const hasIndex =
+    serverHasPreview ||
+    files.some((f) =>
+      [
+        "index.html",
+        "dist/index.html",
+        "build/index.html",
+        "frontend/index.html",
+        "frontend/dist/index.html",
+        "web/index.html",
+        "web/dist/index.html",
+        "app/index.html",
+        "app/dist/index.html",
+        "public/index.html",
+      ].includes(f.path),
+    );
   const rawUrl = open ? `/api/projects/${selectedProject}/file/raw?path=${encodeURIComponent(open)}&v=${reloadNonce}` : "";
 
   return (

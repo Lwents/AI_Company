@@ -386,6 +386,21 @@ fn project_dir(store: &S, id: &str) -> Result<std::path::PathBuf, (StatusCode, S
     Ok(store.dir_of(&p))
 }
 
+const PREVIEW_DIRS: [&str; 12] = [
+    "dist",
+    "build",
+    "frontend/dist",
+    "frontend/build",
+    "web/dist",
+    "web/build",
+    "app/dist",
+    "app/build",
+    "frontend",
+    "web",
+    "app",
+    "public",
+];
+
 async fn project_files(State(store): State<S>, Path(id): Path<String>) -> ApiResult {
     let dir = project_dir(&store, &id)?;
     let files: Vec<Value> = list_dir(&dir, 1000)
@@ -395,7 +410,8 @@ async fn project_files(State(store): State<S>, Path(id): Path<String>) -> ApiRes
             json!({ "path": path, "size": size.trim_end_matches(" B)").parse::<u64>().unwrap_or(0) })
         })
         .collect();
-    Ok(Json(json!({ "dir": dir.display().to_string(), "files": files })))
+    let has_preview = PREVIEW_DIRS.iter().any(|out| dir.join(out).join("index.html").is_file()) || dir.join("index.html").is_file();
+    Ok(Json(json!({ "dir": dir.display().to_string(), "files": files, "hasPreview": has_preview })))
 }
 
 #[derive(Deserialize)]
@@ -505,8 +521,8 @@ async fn download_version(State(store): State<S>, Path((id, n)): Path<(String, u
 
 async fn serve_preview(store: S, id: String, path: String) -> Response {
     let Ok(mut dir) = project_dir(&store, &id) else { return StatusCode::NOT_FOUND.into_response() };
-    // Projects with a build step (Vite, …) are previewed from their build output (root or frontend/).
-    for out in ["dist", "build", "frontend/dist", "frontend/build", "frontend"] {
+    // Projects with a build step (Vite, …) are previewed from their build output (root, frontend/, web/, app/).
+    for out in PREVIEW_DIRS {
         let built = dir.join(out);
         if built.join("index.html").is_file() {
             let rel = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path.clone() };

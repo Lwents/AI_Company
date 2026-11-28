@@ -326,7 +326,10 @@ pub fn list_dir(dir: &Path, max: usize) -> Vec<String> {
                 return;
             }
             let name = e.file_name().to_string_lossy().to_string();
-            if matches!(name.as_str(), "node_modules" | ".git" | "target" | "dist" | "__pycache__" | ".venv") {
+            if matches!(
+                name.as_str(),
+                "node_modules" | ".git" | "target" | "dist" | "__pycache__" | ".venv" | ".playwright-mcp" | ".cache" | ".vite" | ".next" | ".nuxt"
+            ) {
                 continue;
             }
             let p = e.path();
