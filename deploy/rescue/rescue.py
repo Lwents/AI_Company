@@ -214,7 +214,7 @@ def cli_env():
         ("OPUS", main, "Mạnh nhất · model của CEO, BA, PM, Tech Lead trong dự án"),
         ("FABLE", deep, "Neon nghĩ sâu hơn · cho việc khó nhất (chậm hơn)"),
         ("SONNET", mid, "Cân bằng tốc độ / chất lượng"),
-        ("HAIKU", small, "Nhanh, rẻ · model của Dev, Tester… (proxy miễn phí, có lúc hết lượt)"),
+        ("HAIKU", small, "DeepSeek qua Xoay · nhanh, miễn phí · model của Dev, Tester…"),
     ]:
         if model:
             env[f"ANTHROPIC_DEFAULT_{slot}_MODEL"] = model

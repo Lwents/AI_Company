@@ -170,7 +170,7 @@ export function Terminal({
         <span className="grow" />
         <span className="dim small">
           {status === "on"
-            ? "đang kết nối"
+            ? "đã kết nối"
             : status === "connecting"
               ? "đang nối…"
               : "mất kết nối, đang nối lại…"}
