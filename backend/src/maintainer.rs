@@ -161,6 +161,8 @@ pub async fn info(store: &S) -> Value {
         "version": version,
         "model": std::env::var("AICO_CLAUDE_MODEL").unwrap_or_default(),
         "busy": current().lock().unwrap().is_some() || busy_elsewhere(store),
+        // On the server the CLI session lives in the rescue service (survives deploys / crashes of this app).
+        "ptyPath": std::env::var("AICO_PTY_PATH").ok().filter(|p| p.starts_with('/')).unwrap_or_else(|| "/api/maintainer/pty".into()),
     })
 }
 

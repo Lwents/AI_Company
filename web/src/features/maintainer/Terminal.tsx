@@ -77,6 +77,8 @@ export function Terminal({
 
     let ws: WebSocket | null = null;
     let closed = false;
+    // Where the CLI session lives: the rescue service on the server (it survives deploys), else this app.
+    let ptyPath = "/api/maintainer/pty";
     let retry: number | undefined;
     const send = (data: string) => {
       if (ws?.readyState === WebSocket.OPEN)
@@ -87,7 +89,7 @@ export function Terminal({
       setStatus("connecting");
       const proto = location.protocol === "https:" ? "wss" : "ws";
       ws = new WebSocket(
-        `${proto}://${location.host}/api/maintainer/pty?cols=${term.cols}&rows=${term.rows}`,
+        `${proto}://${location.host}${ptyPath}?cols=${term.cols}&rows=${term.rows}`,
       );
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
@@ -106,7 +108,15 @@ export function Terminal({
         if (!closed) retry = window.setTimeout(connect, 2000);
       };
     };
-    connect();
+    void fetch("/api/maintainer")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((i: { ptyPath?: string } | null) => {
+        if (i?.ptyPath?.startsWith("/")) ptyPath = i.ptyPath;
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!closed) connect();
+      });
     const onData = term.onData(send);
     const ro = new ResizeObserver(() => {
       doFit();

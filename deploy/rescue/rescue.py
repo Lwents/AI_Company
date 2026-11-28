@@ -1,27 +1,36 @@
 #!/usr/bin/env python3
-"""AI Company rescue page — a tiny separate service (own systemd unit, own port) that stays up while the
-main app is deploying, restarting or broken. The chairman can see what is wrong, restart, roll back to the
-previous version, and ask the maintainer (Claude CLI) to fix the code.
+"""AI Company rescue service — a tiny separate service (own systemd unit, own port) that stays up while the
+main app is deploying, restarting or broken.
 
-Deliberately standard-library Python (plus python3-argon2) and installed outside the CI deploy: a bad push
-can never take the rescue page down with it.
+It also HOSTS the system maintainer's Claude CLI session (a real terminal, xterm.js in the browser): the
+session lives here, so a deploy or a crash of the main app never kills it, and the same terminal is reachable
+from the main web (Khôi's window) and from /rescue/ when the main app is down.
 
-Env (from /etc/ai-company/env): AUTH_USER, AUTH_PASSWORD_HASH (argon2), AICO_* maintainer settings,
-CUSTOM_API_KEY. Listens on 127.0.0.1:${RESCUE_PORT:-18790}; nginx / Cloudflare forward /rescue/ to it.
+Pages: status + log, restart, roll back to the previous build, and the terminal. Login: the main app's
+session cookie (checked against data/sessions.json, which only holds hashes) or this page's own login
+(same user / argon2 hash as the app).
+
+Standard-library Python (plus python3-argon2), installed outside the CI deploy: a bad push can never take
+the rescue page down with it. Env from /etc/ai-company/env. Listens on 127.0.0.1:${RESCUE_PORT:-18790};
+nginx / Cloudflare forward /rescue/ to it.
 """
+import base64
+import fcntl
 import hashlib
 import hmac
-import html
 import json
 import os
+import queue
 import secrets
 import shutil
+import struct
 import subprocess
+import termios
 import threading
 import time
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http import cookies
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     from argon2 import PasswordHasher
@@ -33,13 +42,11 @@ DATA = os.path.join(APP, "data")
 SRC = os.environ.get("AICO_SRC_DIR", os.path.join(APP, "src"))
 MAIN = os.environ.get("RESCUE_MAIN_URL", "http://127.0.0.1:18787/login")
 PORT = int(os.environ.get("RESCUE_PORT", "18790"))
-SECRET = secrets.token_bytes(32)  # sessions end when the rescue service restarts
+STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+SECRET = secrets.token_bytes(32)  # this page's own sessions end when the rescue service restarts
 SESSION_HOURS = 12
-CHAT_FILE = os.path.join(DATA, "rescue-chat.json")
-BUSY_FILE = os.path.join(DATA, "maintainer.busy")
-SESSION_FILE = os.path.join(DATA, "maintainer.json")
-LOCK = threading.Lock()
-RUN = {"proc": None}
+BACKLOG = 256 * 1024
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 # ---------------------------------------------------------------- helpers
@@ -52,8 +59,7 @@ def sh(args, timeout=20):
 
 
 def sign(user, exp):
-    msg = f"{user}|{exp}".encode()
-    return hmac.new(SECRET, msg, hashlib.sha256).hexdigest()
+    return hmac.new(SECRET, f"{user}|{exp}".encode(), hashlib.sha256).hexdigest()
 
 
 def make_token(user):
@@ -69,6 +75,20 @@ def valid_token(tok):
         return False
 
 
+def main_session_ok(tok):
+    """The main app's login cookie: data/sessions.json maps BLAKE2b-512(token)[:32] (hex) → expiry (ms)."""
+    if not tok:
+        return False
+    try:
+        with open(os.path.join(DATA, "sessions.json")) as f:
+            sessions = json.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    h = hashlib.blake2b(tok.encode()).digest()[:32].hex()
+    exp = sessions.get(h)
+    return bool(exp) and exp > time.time() * 1000
+
+
 def check_password(user, pw):
     want_user = os.environ.get("AUTH_USER", "")
     hashed = os.environ.get("AUTH_PASSWORD_HASH", "").strip()
@@ -82,43 +102,14 @@ def check_password(user, pw):
         return False
 
 
-def load_chat():
-    try:
-        with open(CHAT_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def add_chat(who, text):
-    with LOCK:
-        log = load_chat()
-        log.append({"who": who, "text": text, "ts": int(time.time())})
-        log = log[-80:]
-        with open(CHAT_FILE, "w", encoding="utf-8") as f:
-            json.dump(log, f, ensure_ascii=False)
-
-
-def pid_alive(pid):
-    return pid > 0 and os.path.exists(f"/proc/{pid}")
-
-
-def busy_pid():
-    try:
-        pid = int(open(BUSY_FILE).read().strip() or 0)
-    except Exception:  # noqa: BLE001
-        return 0
-    return pid if pid_alive(pid) else 0
-
-
 def status():
     active, _ = sh(["systemctl", "is-active", "ai-company"])
     since, _ = sh(["systemctl", "show", "ai-company", "-p", "ActiveEnterTimestamp", "--value"])
     try:
         code = urllib.request.urlopen(MAIN, timeout=4).status
-        web = f"trả lời (HTTP {code})"
+        web, web_ok = f"trả lời (HTTP {code})", True
     except Exception as e:  # noqa: BLE001
-        web = f"KHÔNG trả lời ({str(e)[:80]})"
+        web, web_ok = f"KHÔNG trả lời ({str(e)[:80]})", False
     logs, _ = sh(["sudo", "-n", "/usr/bin/journalctl", "-u", "ai-company", "-n", "60", "--no-pager", "-o", "short-iso"])
     commits, _ = sh(["git", "-C", SRC, "log", "-6", "--format=%h %ad %an: %s", "--date=format:%d/%m %H:%M"])
 
@@ -130,13 +121,14 @@ def status():
 
     return {
         "active": active,
+        "ok": active == "active" and web_ok,
         "since": since,
         "web": web,
         "logs": logs[-6000:],
         "commits": commits,
         "binary": mtime(os.path.join(APP, "ai-company")),
         "prev": mtime(os.path.join(APP, "ai-company.prev")),
-        "busy": bool(busy_pid()),
+        "cli": PTY.alive(),
     }
 
 
@@ -150,8 +142,7 @@ def rollback():
     if not os.path.isfile(prev):
         return False, "Không có bản trước (ai-company.prev)."
     cur = os.path.join(APP, "ai-company")
-    bad = os.path.join(APP, "ai-company.bad")
-    shutil.copy2(cur, bad)
+    shutil.copy2(cur, os.path.join(APP, "ai-company.bad"))
     shutil.copy2(prev, cur + ".new")
     os.replace(cur + ".new", cur)
     dist, dist_prev = os.path.join(APP, "web", "dist"), os.path.join(APP, "web", "dist.prev")
@@ -165,26 +156,39 @@ def rollback():
     return ok, ("Đã quay về bản trước và khởi động lại. " if ok else "Đã chép bản trước nhưng khởi động lại lỗi: ") + out
 
 
-# ---------------------------------------------------------------- maintainer (Claude CLI)
+# ---------------------------------------------------------------- the maintainer's Claude CLI (a real terminal)
 def rules():
     return (
-        "Bạn là nhân viên BẢO TRÌ HỆ THỐNG của AI Company, làm việc trên mã nguồn tại " + SRC + " (repo git, nhánh main). "
-        "Bạn đang được gọi từ TRANG CỨU HỘ: hệ thống chính có thể đang hỏng, đang deploy hoặc khởi động lại. Ưu tiên KHÔI PHỤC cho chạy lại: đọc log dịch vụ (đính kèm trong tin nhắn), tìm nguyên nhân, sửa đúng chỗ. "
-        "Trả lời ngắn gọn bằng tiếng Việt, xưng em gọi anh/chị. "
+        "Bạn là nhân viên BẢO TRÌ HỆ THỐNG của AI Company, làm việc trên mã nguồn của chính hệ thống tại " + SRC + " (repo git, nhánh main). "
+        "Chủ tịch nói chuyện với bạn qua terminal này (thường từ điện thoại); làm đúng yêu cầu, trả lời ngắn gọn bằng tiếng Việt, xưng em gọi anh/chị. "
+        "Nếu hệ thống chính hỏng / không vào được: ưu tiên KHÔI PHỤC — xem log bằng `sudo -n /usr/bin/journalctl -u ai-company -n 200 --no-pager -o short-iso`, "
+        "kiểm tra `systemctl is-active ai-company`, tìm nguyên nhân, sửa đúng chỗ; có thể `sudo -n /usr/bin/systemctl restart ai-company`. "
         "PHẠM VI: chỉ sửa trong thư mục mã nguồn; không đụng hệ điều hành, nginx, các dịch vụ khác (9router, xoay-opencode-api, lwent.cloud), không đọc / in bí mật. "
-        "Được phép: `sudo -n /usr/bin/systemctl restart ai-company` và `sudo -n /usr/bin/journalctl -u ai-company -n 200 --no-pager -o short-iso`. "
-        "Máy KHÔNG có cargo: phần Rust do GitHub Actions build + test (lỗi thì không deploy). Đầu việc `git pull --rebase origin main`; kiểm tra giao diện bằng `npm ci` (nếu thiếu) rồi `npm run typecheck && npm run build`. "
-        "Sửa xong: commit (message tiếng Việt) rồi `git push origin main` (GitHub Actions deploy trong 2–3 phút), trừ khi Chủ tịch dặn chưa push. Push xong báo lại và kết thúc lượt."
+        "Máy KHÔNG có cargo: phần Rust do GitHub Actions build + test trước khi deploy (lỗi thì không deploy). Đầu việc `git pull --rebase origin main`; kiểm tra giao diện bằng `npm ci` (nếu thiếu node_modules) rồi `npm run typecheck && npm run build`. "
+        "Sửa xong: commit (message tiếng Việt) rồi `git push origin main` — GitHub Actions deploy trong 2–3 phút, trừ khi Chủ tịch dặn chưa push. "
+        "Terminal này chạy trong dịch vụ cứu hộ nên KHÔNG bị tắt khi hệ thống chính deploy / khởi động lại."
     )
 
 
-def claude_env():
+def model_name(mid):
+    base = mid.rsplit("/", 1)[-1].replace("(", " (")
+    words = []
+    for w in base.split("-"):
+        if w == "free":
+            continue
+        words.append({"gemini": "Gemini", "deepseek": "DeepSeek"}.get(w, w.capitalize() if w in ("neon", "carbon", "argon", "hydrogen") else w))
+    return " ".join(words)
+
+
+def cli_env():
     key = os.environ.get("AICO_CLAUDE_KEY") or os.environ.get("CUSTOM_API_KEY", "")
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "HOME": os.environ.get("AICO_CLAUDE_HOME", "/home/aico"),
         "LANG": "C.UTF-8",
-        "TERM": "dumb",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "FORCE_COLOR": "3",
         "DISABLE_AUTOUPDATER": "1",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "GIT_AUTHOR_NAME": "Khôi (Bảo trì AI Company)",
@@ -194,152 +198,220 @@ def claude_env():
     }
     if os.environ.get("AICO_CLAUDE_BASE_URL"):
         env["ANTHROPIC_BASE_URL"] = os.environ["AICO_CLAUDE_BASE_URL"]
-        env["ANTHROPIC_API_KEY"] = key
-    small = os.environ.get("AICO_CLAUDE_SMALL_MODEL")
+        env["ANTHROPIC_AUTH_TOKEN"] = key
+    main = os.environ.get("AICO_CLAUDE_MODEL", "").strip()
+    mid = os.environ.get("AICO_CLAUDE_MID_MODEL", "").strip() or main
+    small = os.environ.get("AICO_CLAUDE_SMALL_MODEL", "").strip() or mid
+    deep = (main[: main.rfind("(")] if "(" in main else main) + "(high)" if main else ""
+    for slot, model, note in [
+        ("OPUS", main, "Mạnh nhất · model của CEO, BA, PM, Tech Lead trong dự án"),
+        ("FABLE", deep, "Neon nghĩ sâu hơn · cho việc khó nhất (chậm hơn)"),
+        ("SONNET", mid, "Cân bằng tốc độ / chất lượng"),
+        ("HAIKU", small, "Nhanh, rẻ · model của Dev, Tester… (proxy miễn phí, có lúc hết lượt)"),
+    ]:
+        if model:
+            env[f"ANTHROPIC_DEFAULT_{slot}_MODEL"] = model
+            env[f"ANTHROPIC_DEFAULT_{slot}_MODEL_NAME"] = model_name(model)
+            env[f"ANTHROPIC_DEFAULT_{slot}_MODEL_DESCRIPTION"] = note
     if small:
-        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = small
         env["ANTHROPIC_SMALL_FAST_MODEL"] = small
     return env
 
 
-def describe(name, inp):
-    g = lambda k: str((inp or {}).get(k, ""))  # noqa: E731
-    return {
-        "Bash": lambda: "$ " + g("command")[:160],
-        "Read": lambda: "Đọc " + g("file_path"),
-        "Edit": lambda: "Sửa " + g("file_path"),
-        "MultiEdit": lambda: "Sửa " + g("file_path"),
-        "Write": lambda: "Ghi " + g("file_path"),
-        "Grep": lambda: "Tìm \"" + g("pattern")[:60] + "\"",
-        "Glob": lambda: "Tìm tệp " + g("pattern"),
-    }.get(name, lambda: name)()
+class PtySession:
+    """One Claude CLI for everybody; browsers attach and detach, the CLI keeps running."""
 
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.proc = None
+        self.master = None
+        self.backlog = bytearray()
+        self.clients = set()
 
-def run_claude(text):
-    try:
-        sess = json.load(open(SESSION_FILE)).get("session") or None
-    except Exception:  # noqa: BLE001
-        sess = None
-    logs, _ = sh(["sudo", "-n", "/usr/bin/journalctl", "-u", "ai-company", "-n", "40", "--no-pager", "-o", "short-iso"])
-    st = status()
-    prompt = f"{text}\n\n[Tình trạng hệ thống lúc này: dịch vụ {st['active']}, web {st['web']}]\n[40 dòng log gần nhất của ai-company]\n{logs[-4000:]}"
-    args = [os.environ.get("AICO_CLAUDE_BIN", "claude"), "-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--append-system-prompt", rules()]
-    if sess:
-        args += ["--resume", sess]
-    if os.environ.get("AICO_CLAUDE_MODEL"):
-        args += ["--model", os.environ["AICO_CLAUDE_MODEL"]]
-    started = time.time()
-    try:
-        p = subprocess.Popen(args, cwd=SRC, env=claude_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    except Exception as e:  # noqa: BLE001
-        add_chat("khoi", f"⚠️ Không chạy được Claude CLI: {e}")
-        return
-    RUN["proc"] = p
-    with open(BUSY_FILE, "w") as f:
-        f.write(str(p.pid))
-    last, result = "", None
-    try:
-        for line in p.stdout:
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            sid = ev.get("session_id")
-            if sid and sid != sess:
-                sess = sid
-                json.dump({"session": sid}, open(SESSION_FILE, "w"))
-            if ev.get("type") == "assistant":
-                for c in (ev.get("message") or {}).get("content") or []:
-                    if c.get("type") == "text" and c.get("text", "").strip():
-                        last = c["text"].strip()
-                        add_chat("khoi", last)
-                    elif c.get("type") == "tool_use":
-                        add_chat("tool", describe(c.get("name"), c.get("input")))
-            elif ev.get("type") == "result":
-                result = ev
-            if time.time() - started > 3600:
-                p.kill()
-                add_chat("khoi", "⏹ Quá 60 phút, em dừng lại.")
-                break
-        p.wait(timeout=30)
-    except Exception as e:  # noqa: BLE001
-        add_chat("khoi", f"⚠️ Lỗi khi chạy: {e}")
-    finally:
-        RUN["proc"] = None
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def ensure(self, cols, rows):
+        with self.lock:
+            if self.alive():
+                return
+            master, slave = os.openpty()
+            self._size(master, cols, rows)
+            args = [os.environ.get("AICO_CLAUDE_BIN", "claude"), "--dangerously-skip-permissions", "--append-system-prompt", rules()]
+            if os.environ.get("AICO_CLAUDE_MODEL"):
+                args += ["--model", os.environ["AICO_CLAUDE_MODEL"]]
+
+            def controlling_tty():
+                os.setsid()
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+            self.proc = subprocess.Popen(args, cwd=SRC, env=cli_env(), stdin=slave, stdout=slave, stderr=slave, preexec_fn=controlling_tty, close_fds=True)
+            os.close(slave)
+            self.master = master
+            self.backlog = bytearray()
+            threading.Thread(target=self._read, args=(master,), daemon=True).start()
+
+    @staticmethod
+    def _size(fd, cols, rows):
         try:
-            os.remove(BUSY_FILE)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", max(10, min(rows, 300)), max(40, min(cols, 400)), 0, 0))
         except OSError:
             pass
-    mins = (time.time() - started) / 60
-    if result is None:
-        if p.returncode not in (0, None) and p.returncode != -9:
-            add_chat("khoi", f"⚠️ Claude CLI dừng giữa chừng (mã {p.returncode}): {(p.stderr.read() or '')[-600:]}")
-        return
-    final = (result.get("result") or "").strip()
-    if result.get("is_error"):
-        add_chat("khoi", f"⚠️ Claude CLI báo lỗi: {final[:1500]}  ⏱ {mins:.1f} phút")
-    elif final and final != last:
-        add_chat("khoi", f"{final}\n\n⏱ {mins:.1f} phút")
+
+    def resize(self, cols, rows):
+        if self.master is not None:
+            self._size(self.master, cols, rows)
+
+    def _read(self, fd):
+        while True:
+            try:
+                data = os.read(fd, 8192)
+            except OSError:
+                break
+            if not data:
+                break
+            with self.lock:
+                self.backlog += data
+                if len(self.backlog) > BACKLOG:
+                    del self.backlog[: len(self.backlog) - BACKLOG]
+                for q in list(self.clients):
+                    q.put(data)
+        note = "\r\n\x1b[2m[Claude CLI đã thoát — gõ phím bất kỳ để mở lại]\x1b[0m\r\n".encode()
+        with self.lock:
+            for q in list(self.clients):
+                q.put(note)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def write(self, text):
+        if self.alive() and self.master is not None:
+            try:
+                os.write(self.master, text.encode())
+            except OSError:
+                pass
+
+    def attach(self):
+        q = queue.Queue()
+        with self.lock:
+            snapshot = bytes(self.backlog)
+            self.clients.add(q)
+        return q, snapshot
+
+    def detach(self, q):
+        with self.lock:
+            self.clients.discard(q)
+
+
+PTY = PtySession()
+
+
+# ---------------------------------------------------------------- WebSocket (just what the terminal needs)
+def ws_recv(rfile):
+    head = rfile.read(2)
+    if len(head) < 2:
+        return None
+    op, n = head[0] & 0x0F, head[1] & 0x7F
+    if n == 126:
+        n = struct.unpack(">H", rfile.read(2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", rfile.read(8))[0]
+    if n > 1_000_000:
+        return None
+    mask = rfile.read(4) if head[1] & 0x80 else b"\0\0\0\0"
+    data = bytearray(rfile.read(n))
+    for i in range(len(data)):
+        data[i] ^= mask[i % 4]
+    return op, bytes(data)
+
+
+def ws_frame(op, payload):
+    n = len(payload)
+    if n < 126:
+        head = struct.pack(">BB", 0x80 | op, n)
+    elif n < 65536:
+        head = struct.pack(">BBH", 0x80 | op, 126, n)
     else:
-        add_chat("khoi", f"✅ Xong. ⏱ {mins:.1f} phút")
+        head = struct.pack(">BBQ", 0x80 | op, 127, n)
+    return head + payload
 
 
-# ---------------------------------------------------------------- web
-PAGE = r"""<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cứu hộ AI Company</title><style>
-:root{--bg:#10131c;--card:#1a1f2d;--line:#2c3448;--ink:#e8ebf2;--muted:#8f99b0;--ok:#3ccf91;--bad:#ff6b6b;--warn:#ffb84d;--acc:#5b8cff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-main{max-width:860px;margin:0 auto;padding:16px}h1{font-size:20px;margin:4px 0 12px}h2{font-size:15px;margin:0 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.grow{flex:1}
-button{background:var(--line);color:var(--ink);border:0;border-radius:8px;padding:10px 14px;font:inherit;cursor:pointer;min-height:42px}
-button.p{background:var(--acc)}button.d{background:#7a2e35}button:disabled{opacity:.5}
-pre{background:#0b0e15;border-radius:8px;padding:10px;overflow:auto;max-height:300px;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
-.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.muted{color:var(--muted)}
-textarea,input{width:100%;background:#0b0e15;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}
-.log{max-height:55vh;overflow:auto;display:flex;flex-direction:column;gap:6px}
-.m{padding:8px 10px;border-radius:10px;white-space:pre-wrap;word-break:break-word}.m.me{background:#24345e;align-self:flex-end;max-width:90%}
-.m.khoi{background:#202838;max-width:95%}.m.tool{color:var(--muted);font:12px ui-monospace,Consolas,monospace;padding:0 10px}
-a{color:var(--acc)}</style></head><body><main>
-<h1>🛟 Trang cứu hộ AI Company</h1>
-<p class="muted">Trang này chạy riêng, vẫn vào được khi hệ thống chính đang deploy, khởi động lại hay bị lỗi. <a href="/">← Về trang chính</a></p>
-<section class="card"><h2>Tình trạng</h2><div id="st" class="muted">Đang kiểm tra…</div>
-<div class="row" style="margin-top:10px"><button id="re">🔄 Khởi động lại</button><button id="rb" class="d">⏪ Quay về bản trước</button></div>
-<details style="margin-top:8px"><summary class="muted">Log của hệ thống chính</summary><pre id="logs"></pre></details>
-<details><summary class="muted">Commit gần nhất</summary><pre id="commits"></pre></details></section>
-<section class="card"><h2>Nhắn Khôi (bảo trì)</h2><div id="chat" class="log"></div>
-<div class="row" style="margin-top:10px"><textarea id="t" rows="3" class="grow" placeholder="Ví dụ: hệ thống không vào được, xem log và sửa giúp anh"></textarea></div>
-<div class="row" style="margin-top:8px"><button id="send" class="p">Gửi</button><button id="stop">⏹ Dừng</button><span id="busy" class="muted"></span></div></section>
+# ---------------------------------------------------------------- pages
+PAGE = r"""<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>Cứu hộ AI Company</title><link rel="stylesheet" href="static/xterm.css">
+<style>
+:root{--bg:#0c0c0c;--bar:#161616;--line:#2b2b2b;--ink:#e6e6e6;--dim:#8a8a8a;--ok:#4ec98a;--bad:#ff6b6b;--acc:#e07a4f}
+*{box-sizing:border-box}html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Cascadia Mono",Consolas,ui-monospace,monospace}
+body{display:flex;flex-direction:column;height:100dvh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+header{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bar);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header b{font-size:15px}.grow{flex:1}
+.pill{padding:2px 8px;border-radius:99px;font-size:12px;background:#333}.pill.ok{background:#173d2a;color:var(--ok)}.pill.bad{background:#4a1d22;color:var(--bad)}
+button,.btn{background:#222;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;min-height:36px;padding:0 10px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+button:active{background:#333}.tabs{display:flex;gap:4px}.tabs button[aria-selected=true]{background:#2d3b55;border-color:#4a6496}
+main{flex:1;min-height:0;display:flex;flex-direction:column}
+#term{flex:1;min-height:0;padding:6px 4px 2px 8px}#term .xterm{height:100%}
+.keys{display:flex;gap:4px;padding:4px 8px;overflow-x:auto;border-top:1px solid var(--line);flex:none}
+.keys button{min-height:34px;white-space:nowrap}
+.line{display:flex;gap:6px;padding:4px 8px 8px;flex:none}.line input{flex:1;min-width:0;background:#141414;color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit;font-size:16px;padding:6px 8px}
+#st{overflow:auto;padding:12px;display:none}#st.on{display:block}#st .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+pre{background:#111;border:1px solid var(--line);border-radius:6px;padding:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:50vh;overflow:auto}
+.dim{color:var(--dim)}.ok{color:var(--ok)}.bad{color:var(--bad)}a{color:#7fa8ff}
+@media (max-width:600px){header .hide-s{display:none}html,body{font-size:13px}}
+</style></head><body>
+<header><b>🛟 Cứu hộ</b><span id="pill" class="pill">…</span><span class="grow"></span>
+<div class="tabs"><button id="t1" aria-selected="true">Claude CLI</button><button id="t2" aria-selected="false">Tình trạng</button></div>
+<a class="btn hide-s" href="/">Trang chính</a></header>
+<main><div id="tw" style="display:flex;flex-direction:column;flex:1;min-height:0"><div id="term"></div>
+<div class="keys" id="keys"></div>
+<div class="line" id="line" hidden><input id="li" placeholder="Gõ tin nhắn (có dấu) rồi Gửi" enterkeyhint="send"><button id="lb">Gửi</button></div></div>
+<section id="st"><div id="sum" class="dim">Đang kiểm tra…</div>
+<div class="row"><button id="re">🔄 Khởi động lại hệ thống chính</button><button id="rb">⏪ Quay về bản trước</button><a class="btn" href="/">← Trang chính</a></div>
+<p class="dim">Bản lỗi bị đẩy lên? Bấm "Quay về bản trước" để chạy lại ngay, rồi nhắn Khôi ở tab Claude CLI xem log và sửa.</p>
+<details open><summary>Log hệ thống chính</summary><pre id="logs"></pre></details><details><summary>Commit gần nhất</summary><pre id="commits"></pre></details></section></main>
+<script src="static/xterm.js"></script><script src="static/addon-fit.js"></script>
 <script>
-const H={"Content-Type":"application/json","X-Rescue":"1"};
-const post=(u,b)=>fetch("api/"+u,{method:"POST",headers:H,body:JSON.stringify(b||{})}).then(r=>r.json());
-const esc=s=>s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-async function refresh(){try{const s=await fetch("api/status").then(r=>r.json());
-const a=s.active==="active";document.getElementById("st").innerHTML=
-`Dịch vụ: <b class="${a?"ok":"bad"}">${esc(s.active)}</b> từ ${esc(s.since||"—")}<br>Web chính: <b class="${s.web.startsWith("trả lời")?"ok":"bad"}">${esc(s.web)}</b><br><span class="muted">Bản đang chạy: ${s.binary} · bản trước: ${s.prev}</span>`;
-document.getElementById("logs").textContent=s.logs||"(không đọc được log)";document.getElementById("commits").textContent=s.commits;
-document.getElementById("busy").textContent=s.busy?"⏳ Khôi đang làm…":"";}catch(e){document.getElementById("st").textContent="Không đọc được tình trạng: "+e}}
-let n=-1;async function chat(){const log=await fetch("api/chat").then(r=>r.json());if(log.length===n)return;n=log.length;const el=document.getElementById("chat");
-el.innerHTML=log.map(m=>`<div class="m ${m.who}">${esc(m.text)}</div>`).join("")||'<p class="muted">Chưa có tin nhắn.</p>';el.scrollTop=el.scrollHeight}
-document.getElementById("send").onclick=async()=>{const t=document.getElementById("t");if(!t.value.trim())return;const r=await post("chat",{text:t.value});if(r.error)alert(r.error);else t.value="";chat()};
-document.getElementById("stop").onclick=async()=>{const r=await post("stop");alert(r.message)};
-document.getElementById("re").onclick=async()=>{if(!confirm("Khởi động lại hệ thống chính?"))return;const r=await post("restart");alert(r.message);refresh()};
-document.getElementById("rb").onclick=async()=>{if(!confirm("Quay về bản trước (bản đang chạy được giữ lại thành .bad)?"))return;const r=await post("rollback");alert(r.message);refresh()};
-refresh();chat();setInterval(refresh,6000);setInterval(chat,2500);
-</script></main></body></html>"""
+const $=id=>document.getElementById(id);const touch=matchMedia("(pointer: coarse)").matches;
+const H={"Content-Type":"application/json","X-Rescue":"1"};const post=u=>fetch("api/"+u,{method:"POST",headers:H,body:"{}"}).then(r=>r.json());
+function tab(n){$("t1").setAttribute("aria-selected",n===1);$("t2").setAttribute("aria-selected",n===2);$("tw").style.display=n===1?"flex":"none";$("st").classList.toggle("on",n===2);if(n===1){fit()}else refresh()}
+$("t1").onclick=()=>tab(1);$("t2").onclick=()=>tab(2);
+async function refresh(){try{const s=await fetch("api/status").then(r=>r.json());const p=$("pill");p.className="pill "+(s.ok?"ok":"bad");p.textContent=s.ok?"hệ thống chạy":"hệ thống KHÔNG chạy";
+$("sum").innerHTML=`Dịch vụ: <b class="${s.active==="active"?"ok":"bad"}">${s.active}</b> từ ${s.since||"—"}<br>Web chính: <b class="${s.web.startsWith("trả lời")?"ok":"bad"}">${s.web}</b><br>Bản đang chạy: ${s.binary} · bản trước: ${s.prev}`;
+$("logs").textContent=s.logs||"(không đọc được log)";$("commits").textContent=s.commits}catch(e){$("pill").textContent="?"}}
+$("re").onclick=async()=>{if(!confirm("Khởi động lại hệ thống chính?"))return;alert((await post("restart")).message);refresh()};
+$("rb").onclick=async()=>{if(!confirm("Quay về bản trước? (bản hiện tại được giữ lại thành .bad)"))return;alert((await post("rollback")).message);refresh()};
+const term=new Terminal({cursorBlink:true,fontFamily:'"Cascadia Mono",Consolas,"SF Mono",Menlo,ui-monospace,monospace',fontSize:innerWidth<600?12:14,lineHeight:1.15,scrollback:5000,theme:{background:"#0c0c0c",foreground:"#e6e6e6",cursor:"#e6e6e6"}});
+const fa=new FitAddon.FitAddon();term.loadAddon(fa);term.open($("term"));function fit(){try{fa.fit()}catch(e){}if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"resize",cols:term.cols,rows:term.rows}))}
+let ws=null;function send(d){if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"input",data:d}))}
+function connect(){ws=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/rescue/pty?cols="+term.cols+"&rows="+term.rows);ws.binaryType="arraybuffer";
+ws.onopen=()=>{term.reset();fit()};ws.onmessage=m=>term.write(typeof m.data==="string"?m.data:new Uint8Array(m.data));ws.onclose=()=>{term.write("\r\n\x1b[2m[mất kết nối, đang nối lại…]\x1b[0m\r\n");setTimeout(connect,2000)}}
+term.onData(send);new ResizeObserver(fit).observe($("term"));fit();connect();
+[["Esc","\x1b"],["Tab","\t"],["⇧Tab","\x1b[Z"],["↑","\x1b[A"],["↓","\x1b[B"],["←","\x1b[D"],["→","\x1b[C"],["Ctrl+C","\x03"],["⏎","\r"]].forEach(([l,s])=>{const b=document.createElement("button");b.textContent=l;b.onpointerdown=e=>e.preventDefault();b.onclick=()=>{send(s);if(!touch)term.focus()};$("keys").appendChild(b)});
+if(touch){$("line").hidden=false;const go=()=>{const v=$("li").value;if(!v)return;send(v);setTimeout(()=>send("\r"),30);$("li").value=""};$("lb").onclick=go;$("li").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();go()}})}else term.focus();
+if(location.hash==="#status")tab(2);refresh();setInterval(refresh,8000);
+</script></body></html>"""
 
 LOGIN = r"""<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cứu hộ AI Company</title>
-<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#10131c;color:#e8ebf2;font:15px system-ui,sans-serif}
-form{background:#1a1f2d;border:1px solid #2c3448;border-radius:12px;padding:20px;width:min(340px,calc(100vw - 32px));display:grid;gap:10px}
-input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #2c3448;background:#0b0e15;color:#e8ebf2}button{background:#5b8cff;border:0}
-.e{color:#ff6b6b}</style></head><body><form method="post" action="login"><b>🛟 Cứu hộ AI Company</b>
-<span style="color:#8f99b0">Đăng nhập bằng tài khoản AI Company</span>ERR
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c0c0c;color:#e6e6e6;font:15px "Cascadia Mono",Consolas,ui-monospace,monospace;padding:16px}
+form{background:#161616;border:1px solid #2b2b2b;border-radius:10px;padding:20px;width:min(360px,100%);display:grid;gap:10px}
+input,button{font:inherit;font-size:16px;padding:10px;border-radius:6px;border:1px solid #2b2b2b;background:#0c0c0c;color:#e6e6e6}button{background:#2d3b55;border-color:#4a6496}
+.e{color:#ff6b6b}.d{color:#8a8a8a;font-size:13px}</style></head><body><form method="post" action="login"><b>🛟 Cứu hộ AI Company</b>
+<span class="d">Đăng nhập bằng tài khoản AI Company (đã đăng nhập ở trang chính thì không cần).</span>ERR
 <input name="u" placeholder="Tài khoản" autocomplete="username" required><input name="p" type="password" placeholder="Mật khẩu" autocomplete="current-password" required>
 <button>Vào</button></form></body></html>"""
 
 
+def allowed_origin(origin, host):
+    if not origin:
+        return True  # not a browser cross-site request
+    allow = [o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    return origin in allow or origin in (f"https://{host}", f"http://{host}")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "rescue"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):  # quiet
         pass
@@ -348,16 +420,26 @@ class Handler(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         return p[len("/rescue"):] if p.startswith("/rescue") else p
 
+    def query(self):
+        from urllib.parse import parse_qs
+        return {k: v[0] for k, v in parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "").items()}
+
     def authed(self):
-        c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
-        return "rescue" in c and valid_token(c["rescue"].value)
+        c = cookies.SimpleCookie()
+        try:
+            c.load(self.headers.get("Cookie", ""))
+        except cookies.CookieError:
+            return False
+        if "rescue" in c and valid_token(c["rescue"].value):
+            return True
+        return "aico_session" in c and main_session_ok(c["aico_session"].value)
 
     def send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-store" if not ctype.startswith(("text/css", "application/javascript")) else "max-age=86400")
         self.send_header("X-Frame-Options", "DENY")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
@@ -369,17 +451,102 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path_only()
-        if p in ("", "/"):
-            if p == "":
-                return self.send(302, "", headers={"Location": "/rescue/"})
+        if p == "":
+            return self.send(302, "", headers={"Location": "/rescue/"})
+        if p.startswith("/static/"):
+            name = os.path.basename(p)
+            path = os.path.join(STATIC, name)
+            if name in ("xterm.js", "addon-fit.js", "xterm.css") and os.path.isfile(path):
+                with open(path, "rb") as f:
+                    return self.send(200, f.read(), "text/css" if name.endswith(".css") else "application/javascript")
+            return self.j({"error": "Không có"}, 404)
+        if p == "/":
             return self.send(200, PAGE if self.authed() else LOGIN.replace("ERR", ""), "text/html; charset=utf-8")
         if not self.authed():
             return self.j({"error": "Chưa đăng nhập"}, 401)
+        if p == "/pty" and self.headers.get("Upgrade", "").lower() == "websocket":
+            if not allowed_origin(self.headers.get("Origin"), self.headers.get("Host", "")):
+                return self.j({"error": "Nguồn không hợp lệ"}, 403)
+            return self.terminal()
         if p == "/api/status":
             return self.j(status())
-        if p == "/api/chat":
-            return self.j(load_chat())
         self.j({"error": "Không có"}, 404)
+
+    def terminal(self):
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.wfile.flush()
+        self.close_connection = True
+        q = self.query()
+        cols, rows = int(q.get("cols", 100) or 100), int(q.get("rows", 30) or 30)
+        wlock = threading.Lock()
+        alive = {"on": True}
+
+        def out(op, payload):
+            with wlock:
+                try:
+                    self.wfile.write(ws_frame(op, payload))
+                    self.wfile.flush()
+                except OSError:
+                    alive["on"] = False
+
+        try:
+            PTY.ensure(cols, rows)
+        except Exception as e:  # noqa: BLE001
+            out(1, f"\r\nKhông mở được Claude CLI: {e}\r\n".encode())
+            return
+        PTY.resize(cols, rows)
+        qq, snapshot = PTY.attach()
+        if snapshot:
+            out(2, snapshot)
+
+        def pump():
+            while alive["on"]:
+                try:
+                    data = qq.get(timeout=25)
+                    out(2, data)
+                except queue.Empty:
+                    out(9, b"")  # ping: keeps proxies from closing an idle terminal
+
+        t = threading.Thread(target=pump, daemon=True)
+        t.start()
+        try:
+            while alive["on"]:
+                fr = ws_recv(self.rfile)
+                if fr is None:
+                    break
+                op, data = fr
+                if op == 8:
+                    break
+                if op == 9:
+                    out(10, data)
+                    continue
+                if op not in (1, 0):
+                    continue
+                try:
+                    msg = json.loads(data.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if msg.get("type") == "input":
+                    if not PTY.alive():
+                        PTY.ensure(cols, rows)
+                        PTY.detach(qq)
+                        qq, snap = PTY.attach()
+                        continue
+                    PTY.write(str(msg.get("data", "")))
+                elif msg.get("type") == "resize":
+                    cols, rows = int(msg.get("cols") or cols), int(msg.get("rows") or rows)
+                    PTY.resize(cols, rows)
+        except OSError:
+            pass
+        finally:
+            alive["on"] = False
+            PTY.detach(qq)
 
     def do_POST(self):
         p = self.path_only()
@@ -394,10 +561,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(401, LOGIN.replace("ERR", '<span class="e">Sai tài khoản hoặc mật khẩu</span>'), "text/html; charset=utf-8")
         if not self.authed() or self.headers.get("X-Rescue") != "1":
             return self.j({"error": "Chưa đăng nhập"}, 401)
-        try:
-            data = json.loads(body or "{}")
-        except ValueError:
-            data = {}
         if p == "/api/restart":
             ok, msg = restart()
             return self.j({"ok": ok, "message": msg})
@@ -407,30 +570,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 ok, msg = False, f"Lỗi: {e}"
             return self.j({"ok": ok, "message": msg})
-        if p == "/api/stop":
-            proc = RUN["proc"]
-            pid = busy_pid()
-            if proc:
-                proc.kill()
-            elif pid:
-                try:
-                    os.kill(pid, 9)
-                except OSError:
-                    pass
-            return self.j({"message": "Đã dừng Khôi." if (proc or pid) else "Khôi không làm việc gì."})
-        if p == "/api/chat":
-            text = str(data.get("text", "")).strip()[:8000]
-            if not text:
-                return self.j({"error": "Tin nhắn trống"}, 400)
-            if busy_pid() or RUN["proc"]:
-                return self.j({"error": "Khôi đang làm việc khác (ở đây hoặc trên trang chính). Đợi xong hoặc bấm Dừng."}, 409)
-            add_chat("me", text)
-            threading.Thread(target=run_claude, args=(text,), daemon=True).start()
-            return self.j({"ok": True})
         self.j({"error": "Không có"}, 404)
 
 
 if __name__ == "__main__":
     os.makedirs(DATA, exist_ok=True)
     print(f"Rescue page on 127.0.0.1:{PORT}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv.daemon_threads = True
+    srv.serve_forever()
