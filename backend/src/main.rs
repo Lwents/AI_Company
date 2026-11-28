@@ -20,6 +20,7 @@ mod tools;
 mod types;
 mod web;
 mod maintainer;
+mod pty;
 mod workflow;
 
 use std::net::SocketAddr;

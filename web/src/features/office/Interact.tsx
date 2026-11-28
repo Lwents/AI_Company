@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/api/http";
 import { useStore } from "@/store";
@@ -13,30 +14,76 @@ export const MENU = [
 export type MenuAction = (typeof MENU)[number]["id"];
 
 /** What to do with the employee in reach: chosen with ↑ ↓ + Enter, the pad, or a tap. */
-export function InteractMenu({ empId, index, onPick }: { empId: string; index: number; onPick: (a: MenuAction) => void }) {
+export function InteractMenu({
+  empId,
+  index,
+  onPick,
+}: {
+  empId: string;
+  index: number;
+  onPick: (a: MenuAction) => void;
+}) {
   const { state } = useStore();
   const e = state?.employees.find((x) => x.id === empId);
   const rt = state?.runtime[empId];
   if (!e) return null;
   return (
-    <div className="interact-menu" role="menu" aria-label={`Tương tác với ${e.name}`}>
+    <div
+      className="interact-menu"
+      role="menu"
+      aria-label={`Tương tác với ${e.name}`}
+    >
       <div className="im-head">
         <b>{e.name}</b> · {ROLE_LABEL[e.role]}
         <div className="small muted">{rt?.note || "Đang rảnh"}</div>
       </div>
       {MENU.map((m, i) => (
-        <button key={m.id} role="menuitem" className={i === index ? "on" : ""} onClick={() => onPick(m.id)}>
+        <button
+          key={m.id}
+          role="menuitem"
+          className={i === index ? "on" : ""}
+          onClick={() => onPick(m.id)}
+        >
           {i === index ? "▶ " : "  "}
           {m.label}
         </button>
       ))}
-      <div className="small muted im-keys">Chạm để chọn · máy tính: ↑ ↓ Enter, Esc đóng</div>
+      <div className="small muted im-keys">
+        Chạm để chọn · máy tính: ↑ ↓ Enter, Esc đóng
+      </div>
     </div>
   );
 }
 
 /** Talking with an employee right in the office: they answer in a few seconds. */
-export function ChatPopup({ empId, onClose, embedded }: { empId: string; onClose: () => void; embedded?: boolean }) {
+/** The real terminal (xterm.js) is only downloaded when the maintainer's window opens. */
+const Terminal = lazy(() =>
+  import("@/features/maintainer/Terminal").then((m) => ({
+    default: m.Terminal,
+  })),
+);
+
+export function ChatPopup(props: {
+  empId: string;
+  onClose: () => void;
+  embedded?: boolean;
+}) {
+  const { state } = useStore();
+  // The system maintainer is a CLI session: shown as a terminal.
+  if (state?.employees.find((x) => x.id === props.empId)?.role === "maintainer")
+    return <Terminal {...props} />;
+  return <PlainChat {...props} />;
+}
+
+function PlainChat({
+  empId,
+  onClose,
+  embedded,
+}: {
+  empId: string;
+  onClose: () => void;
+  embedded?: boolean;
+}) {
   const { state, selectedProject } = useStore();
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -44,10 +91,17 @@ export function ChatPopup({ empId, onClose, embedded }: { empId: string; onClose
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const e = state?.employees.find((x) => x.id === empId);
-  const msgs = (state?.messages ?? []).filter((m) => (m.from === "chairman" && m.to === empId) || (m.from === empId && m.to === "chairman")).slice(-30);
+  const msgs = (state?.messages ?? [])
+    .filter(
+      (m) =>
+        (m.from === "chairman" && m.to === empId) ||
+        (m.from === empId && m.to === "chairman"),
+    )
+    .slice(-30);
   const replying = state?.runtime[empId]?.note === "Đang trả lời Chủ tịch";
   const last = msgs[msgs.length - 1];
-  const waiting = replying || (last?.from === "chairman" && Date.now() - last.ts < 60_000);
+  const waiting =
+    replying || (last?.from === "chairman" && Date.now() - last.ts < 60_000);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -62,7 +116,11 @@ export function ChatPopup({ empId, onClose, embedded }: { empId: string; onClose
     setSending(true);
     setErr("");
     try {
-      await api("POST", "/api/chat", { to: empId, text: text.trim(), projectId: selectedProject ?? undefined });
+      await api("POST", "/api/chat", {
+        to: empId,
+        text: text.trim(),
+        projectId: selectedProject ?? undefined,
+      });
       setText("");
     } catch (x) {
       setErr((x as Error).message);
@@ -72,7 +130,11 @@ export function ChatPopup({ empId, onClose, embedded }: { empId: string; onClose
     }
   };
   return (
-    <div className={`office-chat${embedded ? " embedded" : ""}`} role="dialog" aria-label={`Chat với ${e.name}`}>
+    <div
+      className={`office-chat${embedded ? " embedded" : ""}`}
+      role="dialog"
+      aria-label={`Chat với ${e.name}`}
+    >
       <div className="row between oc-head">
         <b>
           💬 {e.name} · {ROLE_LABEL[e.role]}
@@ -82,13 +144,22 @@ export function ChatPopup({ empId, onClose, embedded }: { empId: string; onClose
         </button>
       </div>
       <div className="oc-list" ref={listRef}>
-        {msgs.length === 0 && <p className="muted small">Chưa có tin nhắn. Hãy chào {e.name} hoặc giao việc.</p>}
+        {msgs.length === 0 && (
+          <p className="muted small">
+            Chưa có tin nhắn. Hãy chào {e.name} hoặc giao việc.
+          </p>
+        )}
         {msgs.map((m) => (
-          <div key={m.id} className={`oc-msg ${m.from === "chairman" ? "me" : "them"}`}>
+          <div
+            key={m.id}
+            className={`oc-msg ${m.from === "chairman" ? "me" : "them"}`}
+          >
             <Markdown text={m.text} />
           </div>
         ))}
-        {waiting && <div className="oc-msg them typing">{e.name} đang trả lời…</div>}
+        {waiting && (
+          <div className="oc-msg them typing">{e.name} đang trả lời…</div>
+        )}
       </div>
       {err && <p className="warn small">{err}</p>}
       <div className="row oc-input">
@@ -108,7 +179,11 @@ export function ChatPopup({ empId, onClose, embedded }: { empId: string; onClose
             }
           }}
         />
-        <button className="primary" disabled={!text.trim() || sending} onClick={() => void send()}>
+        <button
+          className="primary"
+          disabled={!text.trim() || sending}
+          onClick={() => void send()}
+        >
           Gửi
         </button>
       </div>

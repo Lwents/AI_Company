@@ -59,7 +59,7 @@ fn has_cargo() -> bool {
     std::process::Command::new("cargo").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
-fn rules(dir: &Path) -> String {
+pub fn rules(dir: &Path) -> String {
     let cargo = if has_cargo() {
         "Có cargo: sửa Rust thì chạy `cargo test --release --manifest-path backend/Cargo.toml`."
     } else {
@@ -123,21 +123,101 @@ fn short(s: &str, n: usize) -> String {
     if s.chars().count() > n { s.chars().take(n).collect::<String>() + "…" } else { s.to_string() }
 }
 
+/// The text of a tool result (a string, or a list of text blocks).
+fn result_text(c: &Value) -> String {
+    match c.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("
+"),
+        _ => String::new(),
+    }
+}
+
+/// What the chat window shows in its header: the folder and the CLI version.
+pub async fn info(store: &S) -> Value {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    let version = match VERSION.get() {
+        Some(v) => v.clone(),
+        None => {
+            let bin = std::env::var("AICO_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+            let mut c = tokio::process::Command::new(bin);
+            c.arg("--version").env("DISABLE_AUTOUPDATER", "1").stdin(Stdio::null()).kill_on_drop(true);
+            #[cfg(windows)]
+            c.creation_flags(0x0800_0000);
+            let v = tokio::time::timeout(Duration::from_secs(20), c.output())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().next().unwrap_or("").to_string())
+                .unwrap_or_default();
+            if !v.is_empty() {
+                let _ = VERSION.set(v.clone());
+            }
+            v
+        }
+    };
+    json!({
+        "dir": src_dir(store).map(|d| d.display().to_string()).unwrap_or_default(),
+        "version": version,
+        "model": std::env::var("AICO_CLAUDE_MODEL").unwrap_or_default(),
+        "busy": current().lock().unwrap().is_some() || busy_elsewhere(store),
+    })
+}
+
 /// A one-line label for what Claude CLI is doing.
 fn describe(name: &str, input: &Value) -> String {
     let g = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    // Shown like the CLI prints its tool calls.
     match name {
-        "Bash" => format!("$ {}", short(&g("command"), 140)),
-        "Read" => format!("Đọc {}", g("file_path")),
-        "Edit" | "MultiEdit" => format!("Sửa {}", g("file_path")),
-        "Write" => format!("Ghi {}", g("file_path")),
-        "Grep" => format!("Tìm \"{}\"", short(&g("pattern"), 60)),
-        "Glob" => format!("Tìm tệp {}", g("pattern")),
-        "WebSearch" => format!("Tìm trên web: {}", short(&g("query"), 60)),
-        "WebFetch" => format!("Đọc trang: {}", short(&g("url"), 80)),
-        "TodoWrite" => "Lập danh sách việc".into(),
-        other => other.to_string(),
+        "Bash" => format!("Bash({})", short(&g("command"), 160)),
+        "Read" => format!("Read({})", g("file_path")),
+        "Edit" | "MultiEdit" => format!("Update({})", g("file_path")),
+        "Write" => format!("Write({})", g("file_path")),
+        "Grep" => format!("Search(\"{}\")", short(&g("pattern"), 60)),
+        "Glob" => format!("Glob({})", g("pattern")),
+        "WebSearch" => format!("WebSearch({})", short(&g("query"), 60)),
+        "WebFetch" => format!("Fetch({})", short(&g("url"), 80)),
+        "TodoWrite" => "TodoWrite".into(),
+        other => format!("{other}()"),
     }
+}
+
+/// Environment for the Claude CLI, as (name, value) — None removes the variable. On the server (AICO_CLAUDE_HOME
+/// set) the caller starts from an empty environment, so the service's own secrets stay out of the CLI's reach.
+pub fn cli_env(name: &str) -> Vec<(String, Option<String>)> {
+    let mut v: Vec<(String, Option<String>)> = vec![];
+    let mut set = |k: &str, val: String| v.push((k.to_string(), Some(val)));
+    if let Ok(home) = std::env::var("AICO_CLAUDE_HOME") {
+        let _ = std::fs::create_dir_all(&home);
+        set("HOME", home);
+        set("PATH", std::env::var("PATH").unwrap_or_default());
+        set("LANG", "C.UTF-8".into());
+    }
+    if let Ok(url) = std::env::var("AICO_CLAUDE_BASE_URL") {
+        set("ANTHROPIC_BASE_URL", url);
+        if let Ok(key) = std::env::var("AICO_CLAUDE_KEY").or_else(|_| std::env::var("CUSTOM_API_KEY")) {
+            set("ANTHROPIC_API_KEY", key);
+        }
+    }
+    if let Ok(m) = std::env::var("AICO_CLAUDE_SMALL_MODEL") {
+        set("ANTHROPIC_DEFAULT_HAIKU_MODEL", m.clone());
+        set("ANTHROPIC_SMALL_FAST_MODEL", m);
+    }
+    set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1".into());
+    // The server CPU lacks SSE4.2; newer (native) Claude CLI builds won't run there, so never auto-update.
+    set("DISABLE_AUTOUPDATER", "1".into());
+    let who = format!("{name} (Bảo trì AI Company)");
+    set("GIT_AUTHOR_NAME", who.clone());
+    set("GIT_COMMITTER_NAME", who);
+    set("GIT_AUTHOR_EMAIL", "maintainer@ai-company.local".into());
+    set("GIT_COMMITTER_EMAIL", "maintainer@ai-company.local".into());
+    // Not a child of whatever Claude Code session started this server.
+    for (k, _) in std::env::vars() {
+        if k.starts_with("CLAUDE_CODE_") && k != "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" {
+            v.push((k, None));
+        }
+    }
+    v
 }
 
 fn command(dir: &Path, text: &str, session: Option<&str>, emp: &Employee) -> tokio::process::Command {
@@ -152,32 +232,16 @@ fn command(dir: &Path, text: &str, session: Option<&str>, emp: &Employee) -> tok
         cmd.arg("--model").arg(m);
     }
     cmd.current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    // On the server the CLI gets only what it needs (the service's secrets stay out of its reach).
-    if let Ok(home) = std::env::var("AICO_CLAUDE_HOME") {
-        let path = std::env::var("PATH").unwrap_or_default();
-        let _ = std::fs::create_dir_all(&home);
-        cmd.env_clear().env("PATH", path).env("HOME", &home).env("LANG", "C.UTF-8").env("TERM", "dumb");
+    if std::env::var("AICO_CLAUDE_HOME").is_ok() {
+        cmd.env_clear();
+        cmd.env("TERM", "dumb");
     }
-    // Not a child of whatever Claude Code session started this server.
-    for (k, _) in std::env::vars() {
-        if k.starts_with("CLAUDE_CODE_") {
-            cmd.env_remove(k);
-        }
+    for (k, v) in cli_env(&emp.name) {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
     }
-    if let Ok(url) = std::env::var("AICO_CLAUDE_BASE_URL") {
-        cmd.env("ANTHROPIC_BASE_URL", url);
-        if let Ok(key) = std::env::var("AICO_CLAUDE_KEY").or_else(|_| std::env::var("CUSTOM_API_KEY")) {
-            cmd.env("ANTHROPIC_API_KEY", key);
-        }
-    }
-    if let Ok(m) = std::env::var("AICO_CLAUDE_SMALL_MODEL") {
-        cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &m).env("ANTHROPIC_SMALL_FAST_MODEL", &m);
-    }
-    cmd.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
-    // The server CPU lacks SSE4.2; newer (native) Claude CLI builds won't run there, so never auto-update.
-    cmd.env("DISABLE_AUTOUPDATER", "1");
-    let who = format!("{} (Bảo trì AI Company)", emp.name);
-    cmd.env("GIT_AUTHOR_NAME", &who).env("GIT_COMMITTER_NAME", &who).env("GIT_AUTHOR_EMAIL", "maintainer@ai-company.local").env("GIT_COMMITTER_EMAIL", "maintainer@ai-company.local");
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     cmd
@@ -245,6 +309,21 @@ async fn run(store: &S, emp: &Employee, pid: Option<&str>, dir: &Path, text: &st
                     }
                 }
             }
+            Some("user") => {
+                for c in ev.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default() {
+                    if c.get("type").and_then(Value::as_str) == Some("tool_result") {
+                        let out = result_text(&c);
+                        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+                        let mut shown = lines.iter().take(4).map(|l| short(l, 160)).collect::<Vec<_>>().join("
+");
+                        if lines.len() > 4 {
+                            shown.push_str(&format!("
+… +{} dòng", lines.len() - 4));
+                        }
+                        store.log_activity(&emp.id, pid, "result", if shown.is_empty() { "(không có kết quả)".to_string() } else { shown });
+                    }
+                }
+            }
             Some("result") => {
                 result = Some(ev);
                 break;
@@ -292,8 +371,11 @@ mod tests {
 
     #[test]
     fn labels_cli_actions() {
-        assert_eq!(describe("Bash", &json!({ "command": "git push origin main" })), "$ git push origin main");
-        assert_eq!(describe("Edit", &json!({ "file_path": "web/src/App.tsx" })), "Sửa web/src/App.tsx");
+        assert_eq!(describe("Bash", &json!({ "command": "git push origin main" })), "Bash(git push origin main)");
+        assert_eq!(describe("Edit", &json!({ "file_path": "web/src/App.tsx" })), "Update(web/src/App.tsx)");
+        assert_eq!(result_text(&json!({ "content": [{ "type": "text", "text": "a
+b" }] })), "a
+b");
         assert!(rules(Path::new("/opt/src")).contains("git push origin main"));
     }
 }

@@ -50,6 +50,8 @@ pub fn router(store: S) -> Router {
         .route("/api/mcp", get(mcp_servers))
         .route("/api/chat", post(chairman_chat))
         .route("/api/screen/{id}", get(employee_screen))
+        .route("/api/maintainer", get(maintainer_info))
+        .route("/api/maintainer/pty", get(maintainer_pty))
         .route("/api/screen/{id}/input", post(screen_input))
         .route("/preview/{id}/{*path}", get(preview))
         .route("/preview/{id}/", get(preview_index))
@@ -600,6 +602,23 @@ async fn resolve_approval(State(store): State<S>, Path(id): Path<String>, Json(b
 struct NewEmployee {
     role: Role,
     name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PtyQuery {
+    #[serde(default)]
+    cols: Option<u16>,
+    #[serde(default)]
+    rows: Option<u16>,
+}
+
+/// The maintainer's interactive Claude CLI (xterm.js in the browser).
+async fn maintainer_pty(State(store): State<S>, Query(q): Query<PtyQuery>, up: WebSocketUpgrade) -> Response {
+    up.on_upgrade(move |socket| crate::pty::serve(store, socket, q.cols.unwrap_or(100), q.rows.unwrap_or(30)))
+}
+
+async fn maintainer_info(State(store): State<S>) -> ApiResult {
+    Ok(Json(crate::maintainer::info(&store).await))
 }
 
 async fn create_employee(State(store): State<S>, Json(b): Json<NewEmployee>) -> ApiResult {

@@ -1,0 +1,146 @@
+/* The maintainer's real Claude CLI in a terminal window. */
+.office-chat.term {
+  --t-bg: #0c0c0c;
+  --t-ink: #e6e6e6;
+  --t-dim: #8a8a8a;
+  --t-line: #2e2e2e;
+  background: var(--t-bg);
+  color: var(--t-ink);
+  border: 1px solid var(--t-line);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  font: 13px/1.4 "Cascadia Mono", Consolas, ui-monospace, monospace;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.office-chat.term:not(.embedded) {
+  width: min(980px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 110px));
+}
+.term .dim {
+  color: var(--t-dim);
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: #1a1a1a;
+  border-bottom: 1px solid var(--t-line);
+  white-space: nowrap;
+  min-width: 0;
+}
+.term-bar .grow {
+  flex: 1;
+}
+.term-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d4a72c;
+  flex: none;
+}
+.term-led.on {
+  background: #4ec98a;
+}
+.term-led.off {
+  background: #ff6b6b;
+}
+.term-close {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--t-dim);
+  font: inherit;
+  font-size: 15px;
+  min-height: 30px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+.term-close:hover {
+  color: var(--t-ink);
+}
+.term-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 4px 4px 10px;
+}
+.term-host .xterm {
+  height: 100%;
+}
+.term-host .xterm-viewport {
+  background: var(--t-bg) !important;
+}
+.term-keys {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--t-line);
+  overflow-x: auto;
+  flex: none;
+}
+.term-keys button,
+.term-line button {
+  background: #1f1f1f;
+  color: var(--t-ink);
+  border: 1px solid var(--t-line);
+  box-shadow: none;
+  font: inherit;
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.term-keys button:active {
+  background: #333;
+}
+.term-line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 8px 8px;
+  flex: none;
+}
+.term-line .t-gt {
+  color: var(--t-dim);
+}
+.term-line input {
+  flex: 1;
+  min-width: 0;
+  background: #141414;
+  color: var(--t-ink);
+  border: 1px solid var(--t-line);
+  font: inherit;
+  font-size: 16px; /* no zoom-on-focus on iPhone */
+  padding: 6px 8px;
+}
+@media (max-width: 760px) {
+  .term-bar .dim:not(.small) {
+    display: none;
+  }
+}
+
+/* A real terminal needs room: centred on computers, full screen on phones. */
+.office-chat.term:not(.embedded) {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  z-index: 900;
+  max-width: none;
+  max-height: none;
+}
+@media (max-width: 760px) {
+  .office-chat.term:not(.embedded) {
+    left: 0;
+    top: 0;
+    transform: none;
+    width: 100vw;
+    height: 100dvh;
+    border: 0;
+  }
+}

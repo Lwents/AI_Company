@@ -24,6 +24,8 @@ argon2 = "0.5"
 blake2 = "0.10"
 getrandom = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# A real terminal (PTY) for the maintainer's interactive Claude CLI, on Linux and Windows (ConPTY).
+portable-pty = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
