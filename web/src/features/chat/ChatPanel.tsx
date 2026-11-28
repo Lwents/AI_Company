@@ -120,21 +120,31 @@ export function ChatPanel() {
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          disabled={uploading}
-          onClick={() => fileRef.current?.click()}
-          title="Chọn một hoặc nhiều tệp/ảnh (hoặc Ctrl+V để dán)"
-        >
-          {uploading ? "…" : "Tệp"}
-        </button>
-        <input
-          ref={inputRef}
-          placeholder="Nhắn với tư cách Chủ tịch… (họ đọc ở lượt việc kế tiếp)"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-        />
+        <div className="composer-box">
+          <button
+            type="button"
+            className="attach-plus"
+            disabled={uploading}
+            onClick={() => fileRef.current?.click()}
+            aria-label="Chọn tệp hoặc ảnh"
+            title="Chọn một hoặc nhiều tệp/ảnh (hoặc Ctrl+V để dán)"
+          >
+            {uploading ? (
+              "…"
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M9 3.5v11M3.5 9h11" stroke="currentColor" strokeWidth="2.4" strokeLinecap="square" />
+              </svg>
+            )}
+          </button>
+          <input
+            ref={inputRef}
+            placeholder="Nhắn với tư cách Chủ tịch… (họ đọc ở lượt việc kế tiếp)"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()}
+          />
+        </div>
         <button className="primary" onClick={send} disabled={!text.trim()}>
           Gửi
         </button>

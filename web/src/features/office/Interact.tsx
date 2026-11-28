@@ -200,30 +200,40 @@ function PlainChat({
       </div>
       {err && <p className="warn small">{err}</p>}
       <div className="row oc-input">
-        <button
-          type="button"
-          disabled={uploading}
-          onClick={() => fileRef.current?.click()}
-          title="Chọn một hoặc nhiều tệp/ảnh (hoặc Ctrl+V để dán)"
-        >
-          {uploading ? "…" : "Tệp"}
-        </button>
-        <textarea
-          ref={inputRef}
-          rows={2}
-          placeholder={`Nhắn ${e.name}… (Enter gửi, Shift+Enter xuống dòng, Esc đóng)`}
-          value={text}
-          onChange={(ev) => setText(ev.target.value)}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter" && !ev.shiftKey) {
-              ev.preventDefault();
-              void send();
-            } else if (ev.key === "Escape") {
-              ev.preventDefault();
-              onClose();
-            }
-          }}
-        />
+        <div className="oc-box">
+          <button
+            type="button"
+            className="oc-attach"
+            disabled={uploading}
+            onClick={() => fileRef.current?.click()}
+            aria-label="Chọn tệp hoặc ảnh"
+            title="Chọn một hoặc nhiều tệp/ảnh (hoặc Ctrl+V để dán)"
+          >
+            {uploading ? (
+              "…"
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M9 3.5v11M3.5 9h11" stroke="currentColor" strokeWidth="2.4" strokeLinecap="square" />
+              </svg>
+            )}
+          </button>
+          <textarea
+            ref={inputRef}
+            rows={2}
+            placeholder={`Nhắn ${e.name}… (Enter gửi, Shift+Enter xuống dòng, Esc đóng)`}
+            value={text}
+            onChange={(ev) => setText(ev.target.value)}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter" && !ev.shiftKey) {
+                ev.preventDefault();
+                void send();
+              } else if (ev.key === "Escape") {
+                ev.preventDefault();
+                onClose();
+              }
+            }}
+          />
+        </div>
         <button
           className="primary"
           disabled={!text.trim() || sending}

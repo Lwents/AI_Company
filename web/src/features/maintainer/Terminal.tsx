@@ -378,40 +378,48 @@ export function Terminal({
       )}
       {touch && (
         <div className="term-line">
-          <button
-            type="button"
-            className="t-img"
-            disabled={uploading}
-            onPointerDown={(ev) => ev.preventDefault()}
-            onClick={() => fileRef.current?.click()}
-            aria-label="Gửi tệp"
-            title="Chọn một hoặc nhiều tệp/ảnh gửi vào đoạn chat"
-          >
-            {uploading ? "…" : "Tệp"}
-          </button>
-          <input
-            ref={inputRef}
-            value={line}
-            placeholder="Gõ tin nhắn (có dấu) rồi Gửi"
-            onFocus={() => {
-              typingRef.current = true;
-              setTyping(true);
-              stickRef.current = true;
-              setScrolledUp(false);
-              window.setTimeout(() => termRef.current?.scrollToBottom(), 180);
-            }}
-            onBlur={() => {
-              typingRef.current = false;
-              setTyping(false);
-            }}
-            onChange={(ev) => setLine(ev.target.value)}
-            onKeyDown={(ev) => {
-              if (ev.key === "Enter" && !ev.nativeEvent.isComposing) {
-                ev.preventDefault();
-                sendLine();
-              }
-            }}
-          />
+          <div className="term-input-box">
+            <button
+              type="button"
+              className="t-img"
+              disabled={uploading}
+              onPointerDown={(ev) => ev.preventDefault()}
+              onClick={() => fileRef.current?.click()}
+              aria-label="Chọn tệp hoặc ảnh"
+              title="Chọn một hoặc nhiều tệp/ảnh gửi vào đoạn chat"
+            >
+              {uploading ? (
+                "…"
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                  <path d="M9 3.5v11M3.5 9h11" stroke="currentColor" strokeWidth="2.4" strokeLinecap="square" />
+                </svg>
+              )}
+            </button>
+            <input
+              ref={inputRef}
+              value={line}
+              placeholder="Gõ tin nhắn (có dấu) rồi Gửi"
+              onFocus={() => {
+                typingRef.current = true;
+                setTyping(true);
+                stickRef.current = true;
+                setScrolledUp(false);
+                window.setTimeout(() => termRef.current?.scrollToBottom(), 180);
+              }}
+              onBlur={() => {
+                typingRef.current = false;
+                setTyping(false);
+              }}
+              onChange={(ev) => setLine(ev.target.value)}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter" && !ev.nativeEvent.isComposing) {
+                  ev.preventDefault();
+                  sendLine();
+                }
+              }}
+            />
+          </div>
           <button onPointerDown={(ev) => ev.preventDefault()} onClick={sendLine}>
             Gửi
           </button>

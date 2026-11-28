@@ -141,9 +141,47 @@
 .oc-msg p {
   margin: 0;
 }
+.oc-box {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  background: #141626;
+  border: 2px solid var(--line);
+  box-shadow: var(--bevel-in);
+}
+.oc-box:focus-within {
+  border-color: var(--accent-hi);
+}
+.oc-box .oc-attach {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent-hi);
+  justify-content: center;
+  flex-shrink: 0;
+}
+.oc-box .oc-attach:hover:not(:disabled) {
+  background: rgba(65, 166, 246, 0.14);
+  filter: none;
+}
+.oc-box .oc-attach:active:not(:disabled) {
+  top: 0;
+  box-shadow: none;
+  opacity: 0.75;
+}
 .oc-input textarea {
   flex: 1;
+  min-width: 0;
   resize: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 5px 8px 5px 2px;
 }
 
 @media (max-width: 420px) {
