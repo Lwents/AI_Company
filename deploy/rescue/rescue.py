@@ -412,7 +412,7 @@ button:active{background:#333}.tabs{display:flex;gap:4px}.tabs button[aria-selec
 .imgbtn{background:#243248;border-color:#3c547a}
 main{flex:1;min-height:0;display:flex;flex-direction:column}
 #stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
-#term{flex:1;min-height:0;overflow:hidden;padding:6px 4px 2px 8px}#term .xterm{height:100%}#term .xterm-viewport{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}#term .xterm-helper-textarea{pointer-events:none}
+#term{flex:1;min-height:0;overflow:hidden;background:var(--bg);padding:6px 4px 2px 8px}#term .xterm{height:100%}#term .xterm-viewport{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}#term .xterm-helper-textarea{pointer-events:none}body.touch #term .xterm-screen{pointer-events:none}body.touch #term .xterm-viewport{z-index:2;background:transparent!important;overflow-y:auto}
 #jump{position:absolute;right:12px;bottom:10px;z-index:5;background:#243248;border-color:#4a6496;border-radius:99px;box-shadow:0 4px 14px rgba(0,0,0,.5);font-size:12px;min-height:32px;padding:0 12px}
 #jump[hidden],.keys[hidden]{display:none}
 .keys{display:flex;gap:4px;padding:4px 8px;overflow-x:auto;border-top:1px solid var(--line);flex:none}
@@ -447,7 +447,7 @@ $("re").onclick=async()=>{if(!confirm("Khởi động lại hệ thống chính?
 $("rb").onclick=async()=>{if(!confirm("Quay về bản trước? (bản hiện tại được giữ lại thành .bad)"))return;alert((await post("rollback")).message);refresh()};
 const term=new Terminal({cursorBlink:true,fontFamily:'"Cascadia Mono",Consolas,"SF Mono",Menlo,ui-monospace,monospace',fontSize:innerWidth<600?12:14,lineHeight:1.15,scrollback:5000,allowProposedApi:true,theme:{background:"#0c0c0c",foreground:"#e6e6e6",cursor:"#e6e6e6"}});
 const fa=new FitAddon.FitAddon();term.loadAddon(fa);term.open($("term"));
-if(touch&&term.textarea){term.textarea.setAttribute("readonly","readonly");term.textarea.setAttribute("inputmode","none");term.textarea.tabIndex=-1}
+if(touch){document.body.classList.add("touch");if(term.textarea){term.textarea.setAttribute("readonly","readonly");term.textarea.setAttribute("inputmode","none");term.textarea.tabIndex=-1}const vp=$("term").querySelector(".xterm-viewport");if(vp){const sb=e=>e.stopPropagation();vp.addEventListener("touchstart",sb,{passive:true});vp.addEventListener("touchmove",sb,{passive:true})}}
 term.parser.registerCsiHandler({final:"J"},p=>{if(p[0]===2)term.clear();return false});
 let stick=true,typing=false,sent="",fitT=null;
 const atBottom=()=>term.buffer.active.viewportY>=term.buffer.active.baseY-2;

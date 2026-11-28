@@ -112,6 +112,17 @@ html.term-lock body {
 .term-host .xterm-helper-textarea {
   pointer-events: none;
 }
+.term-touch .term-host {
+  background: var(--t-bg);
+}
+.term-touch .xterm-screen {
+  pointer-events: none;
+}
+.term-touch .xterm-viewport {
+  z-index: 2;
+  background: transparent !important;
+  overflow-y: auto;
+}
 .term-keys {
   display: flex;
   gap: 4px;

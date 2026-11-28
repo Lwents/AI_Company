@@ -83,6 +83,14 @@ export function Terminal({
       term.textarea.setAttribute("inputmode", "none");
       term.textarea.tabIndex = -1;
     }
+    // Let the native browser compositor handle inertial touch scrolling on .xterm-viewport
+    // instead of xterm's preventDefault() manual scrollTop stepping.
+    const vp = touch ? host.querySelector<HTMLElement>(".xterm-viewport") : null;
+    const stopTouch = (ev: TouchEvent) => ev.stopPropagation();
+    if (vp) {
+      vp.addEventListener("touchstart", stopTouch, { passive: true });
+      vp.addEventListener("touchmove", stopTouch, { passive: true });
+    }
     // Track whether the user wants to follow the latest output so streaming / redraws never drift upward.
     stickRef.current = true;
     const isAtBottom = () =>
@@ -213,6 +221,10 @@ export function Terminal({
         vv.removeEventListener("resize", syncViewport);
         vv.removeEventListener("scroll", syncViewport);
       }
+      if (vp) {
+        vp.removeEventListener("touchstart", stopTouch);
+        vp.removeEventListener("touchmove", stopTouch);
+      }
       ro.disconnect();
       onScroll.dispose();
       onData.dispose();
@@ -262,7 +274,7 @@ export function Terminal({
   return (
     <div
       ref={dialogRef}
-      className={`office-chat term${embedded ? " embedded" : ""}`}
+      className={`office-chat term${embedded ? " embedded" : ""}${touch ? " term-touch" : ""}`}
       role="dialog"
       aria-label={`Claude CLI của ${e.name}`}
       onPaste={(ev) => {
